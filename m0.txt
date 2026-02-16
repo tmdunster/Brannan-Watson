@@ -272,7 +272,7 @@ dL00ds_expr := diff(L00_expr, s):
 dL00ds := unapply(dL00ds_expr, s, phi):
 
 # ---- EDGE/BOUNDARY s-derivatives (exact closed forms, precomputed) ----
-L_beta0_expr_diff_s = (1/4*(cos(phi)*(alpha*s-4)*exp(3*s)+(-alpha*s+2)*exp(4*s)
+L_beta0_expr_diff_s := (1/4*(cos(phi)*(alpha*s-4)*exp(3*s)+(-alpha*s+2)*exp(4*s)
 +exp(2*s)*alpha*s-2+(-alpha*s+4)*exp(s)*cos(phi))*Pi*(exp(2*s)+1-2*exp(s)*cos(
 phi))^(1/4*alpha)-1/2*sin(Pi*alpha)*(exp(s)-1)^alpha*((s*alpha*cos(phi)-1/2*s*
 alpha-cos(phi))*exp(3*s)+(1/2-1/2*s*alpha)*exp(4*s)+s*alpha*(-1/2+cos(phi))*exp
@@ -289,7 +289,7 @@ alpha+(-1/4*exp(4*s)+1/4)*2^(1+alpha)+2^alpha*cos(phi)*(exp(3*s)-exp(s))))*(
 alpha-1)/s^2/sin(Pi*alpha)/(exp(2*s)-1)/Pi/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/
 alpha/(Pi-phi)^2/GAMMA(1+alpha):
 
-L_alpha0_expr_diff_s = 1/4*(2*(beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-exp(4*s)
+L_alpha0_expr_diff_s := 1/4*(2*(beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-exp(4*s)
 +exp(2*s))*s^(1+beta)-2*s^beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+
 1/2)*(-1+beta))*Pi*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*beta)+2*(exp(s)-1)^(-
 beta)*sin(Pi*beta)*(beta*((-1/2+cos(phi))*exp(3*s)-1/2*exp(4*s)+(-1/2+cos(phi))
@@ -309,14 +309,14 @@ phi)-1/2*exp(4*s)+1/2)*ln(sin(1/2*phi))-4*(1/4*beta^2*(exp(4*s)-1)*s^(1+beta)+s
 ^beta*cos(phi)*(-1+beta)*(exp(3*s)-exp(s)))*2^(-beta)*Pi)/s^2/sin(Pi*beta)/(exp
 (2*s)-1)/Pi/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/beta/(Pi-phi)^2/GAMMA(1-beta):
 
-L_alpha1_expr_diff_s = -((((-1+beta)*(s-1)*exp(2*s)+s*(1+beta)*exp(s)+beta-1)*(
+L_alpha1_expr_diff_s := -((((-1+beta)*(s-1)*exp(2*s)+s*(1+beta)*exp(s)+beta-1)*(
 s/(exp(s)-1))^beta+2*(sin(1/2*phi)-1)*(exp(s)-1))*(exp(2*s)+1-2*exp(s)*cos(phi)
 )^(1/2)-(s/(exp(s)-1))^beta*((((-2*s+2)*beta+s-2)*cos(phi)+s+beta-1)*exp(2*s)+(
 -1+beta)*(s-1)*exp(3*s)+((-s-2*beta+2)*cos(phi)+1+(s-1)*beta)*exp(s)+beta-1))/(
 exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)/(1+beta)/(exp(s)-1)/s^2/Pi/(Pi-phi)^2/GAMMA
 (1-beta):
 
-L_beta1_expr_diff_s = -(alpha-1)*((sin(1/2*phi)*s^alpha*((alpha-1)*exp(4*s)+(((-\
+L_beta1_expr_diff_s := -(alpha-1)*((sin(1/2*phi)*s^alpha*((alpha-1)*exp(4*s)+(((-\
 2*alpha-2)*cos(phi)+alpha-1))*exp(2*s)+(((-2*alpha+2)*cos(phi)+1+alpha))*exp(3*s)+
 exp(s)*(1+alpha))*(1/s*(exp(s)-1))^alpha+(1/2*s^alpha*alpha^2+s^(alpha-1)*alpha
 -1/2*s^alpha)*((-1/2+cos(phi))*exp(4*s)-exp(s)*cos(phi)-cos(phi)*exp(2*s)+cos(
