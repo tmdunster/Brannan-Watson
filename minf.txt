@@ -1,0 +1,671 @@
+restart:
+Digits := 60:
+
+# ============================================================
+#  Numerical search for m_infty using the normalized kernel
+#      L_infty(alpha,beta,phi; s)
+#
+#  This file contains:
+#   (1) Precomputed exact formulas for L_infty and d/ds L_infty,
+#       including stable limiting cases on the boundary faces
+#       alpha=0,1; beta=0,1; and phi=Pi (all removable singularities).
+#   (2) A grid search over (alpha,beta,phi) in
+#         alpha,beta in [0,1],  phi in [phi0,Pi],
+#       where for each sampled triple we minimize over s in [sLo,sHi]
+#       by evaluating L_infty at:
+#         - the endpoints s = sLo and s = sHi, and
+#         - any interior critical points where d/ds L_infty = 0.
+#
+#  Default parameters match the paper's m_infty computation:
+#     phi0 = 0.061,  sLo = 1,  sHi = 30.
+#  (Increase NsBracket when sHi is increased.)
+# ============================================================
+
+# ---- (Reference) unnormalised kernel appearing in the definition of L_infty ----
+# Kept for reference only: the search below uses the Linf_* procedures.
+Linf_kernel_expr := ((1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+
+alpha)*s^(2-beta)/GAMMA(1-beta)*((s/(exp(s)-1))^beta*((1+exp(s))^alpha-((exp(2*
+s)+1-2*exp(s)*cos(phi))^(1/2))^alpha)/(2^alpha-(2*sin(1/2*phi))^alpha)-1-1/2*(
+alpha-beta)*s)/s^2-(1-alpha)*((2*sin(1/2*phi))^(-beta)-2^(-beta))/(Pi-phi)^2/
+sin(Pi*beta)/GAMMA(1-beta)*s^(alpha+2)/GAMMA(1+alpha)*((1/s*(exp(s)-1))^alpha*(
+((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2))^(-beta)-(1+exp(s))^(-beta))/((2*sin(1/2*
+phi))^(-beta)-2^(-beta))-1-1/2*(alpha-beta)*s)/s^2)/(alpha+beta):
+
+# ---- VALUES: L_infty (stored below as Linf_*) ----
+Linf_abphi_expr := ((1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)/(Pi-phi)^2
+/sin(Pi*alpha)/GAMMA(1+alpha)*s^(2-beta)/GAMMA(1-beta)*((s/(exp(s)-1))^beta*((1
++exp(s))^alpha-((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2))^alpha)/(2^alpha-(2*sin(1/
+2*phi))^alpha)-1-1/2*(alpha-beta)*s)/s^2-(1-alpha)*((2*sin(1/2*phi))^(-beta)-2^
+(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)*s^(alpha+2)/GAMMA(1+alpha)*((1/s
+*(exp(s)-1))^alpha*(((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2))^(-beta)-(1+exp(s))^(
+-beta))/((2*sin(1/2*phi))^(-beta)-2^(-beta))-1-1/2*(alpha-beta)*s)/s^2)/(alpha+
+beta)/(s^(alpha+2)):
+Linf_abphi := unapply(Linf_abphi_expr, alpha,beta,phi,s):
+
+Linf_0bphi_expr := 1/2*(-2*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*beta)*Pi-s^(-
+beta)*(s/(exp(s)-1))^beta*ln(exp(2*s)+1-2*exp(s)*cos(phi))*sin(Pi*beta)+2*s^(-
+beta)*(s/(exp(s)-1))^beta*ln(1+exp(s))*sin(Pi*beta)-Pi*(2^(-beta)*beta*s-2^(1-
+beta))*sin(1/2*phi)^(-beta)+2^(-beta)*beta*Pi*s-s^(1-beta)*ln(sin(1/2*phi))*
+beta*sin(Pi*beta)+2*s^(-beta)*ln(sin(1/2*phi))*sin(Pi*beta)-2^(1-beta)*Pi+2*(1+
+exp(s))^(-beta)*Pi)/beta/Pi/sin(Pi*beta)/(Pi-phi)^2/GAMMA(1-beta)/s^2:
+Linf_0bphi := unapply(Linf_0bphi_expr, beta,phi,s):
+
+Linf_a0phi_expr := (-1/2*ln(exp(2*s)+1-2*exp(s)*cos(phi))*(1/s*(exp(s)-1))^
+alpha*sin(Pi*alpha)+ln(1+exp(s))*(1/s*(exp(s)-1))^alpha*sin(Pi*alpha)-1/2*Pi*
+alpha*2^alpha*(sin(1/2*phi)^alpha-1)*s^(1-alpha)-1/2*2^(1+alpha)*s^(-alpha)*sin
+(1/2*phi)^alpha*Pi+sin(Pi*alpha)*(1/2*alpha*s+1)*ln(sin(1/2*phi))+Pi*s^(-alpha)
+*((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2*alpha)+1/2*2^(1+alpha)-(1+exp(s))^alpha))
+*(alpha-1)/alpha/Pi/sin(Pi*alpha)/(Pi-phi)^2/GAMMA(1+alpha)/s^2:
+Linf_a0phi := unapply(Linf_a0phi_expr, alpha,phi,s):
+
+Linf_1bphi_expr := (-((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)-exp(s)-1)*s^(-beta
+-3)*(s/(exp(s)-1))^beta-(sin(1/2*phi)-1)*(-2*s^(-beta-3)+s^(-beta-2)*(-1+beta))
+)/Pi/(Pi-phi)^2/(1+beta)/GAMMA(1-beta):
+Linf_1bphi := unapply(Linf_1bphi_expr, beta,phi,s):
+
+Linf_a1phi_expr := 1/4*(-4*((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)-exp(s)-1)*
+sin(1/2*phi)*(1/s*(exp(s)-1))^alpha+(1+exp(s))*(exp(2*s)+1-2*exp(s)*cos(phi))^(
+1/2)*(alpha*s-s+2)*(sin(1/2*phi)-1))/(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)*(
+alpha-1)/Pi/s^2/GAMMA(alpha+2)/(Pi-phi)^2/(1+exp(s))/sin(1/2*phi):
+Linf_a1phi := unapply(Linf_a1phi_expr, alpha,phi,s):
+
+Linf_00phi_expr := (8*ln(sin(1/2*phi))*ln(2)-ln(exp(s)^2+1-2*exp(s)*cos(phi))^2+
+4*ln(exp(s)^2+1-2*exp(s)*cos(phi))*ln(s)+4*ln(exp(s)^2+1-2*exp(s)*cos(phi))*ln(
+1/s*(exp(s)-1))+4*ln(1+exp(s))^2-8*ln(s)*ln(1+exp(s))-8*ln(1+exp(s))*ln(1/s*(
+exp(s)-1))+4*ln(sin(1/2*phi))^2-8*ln(sin(1/2*phi))*ln(s))/(8*Pi^3*s^2-16*Pi^2*
+phi*s^2+8*Pi*phi^2*s^2):
+Linf_00phi := unapply(Linf_00phi_expr, phi,s):
+
+Linf_11phi_expr := 0:
+Linf_11phi := unapply(Linf_11phi_expr, phi,s):
+
+Linf_abPi_expr := 1/32*(-alpha*(-alpha+beta)*sin(Pi*beta)*(2^(1+alpha)*
+exp(s)+2^alpha*(exp(2*s)+1))*s^(-alpha+1-beta)+alpha*((exp(2*s)+1)*2^(1+alpha)+
+4*2^alpha*exp(s))*sin(Pi*beta)*s^(-beta-alpha)+8*exp(s)*(exp(s)-1)^alpha*s^(-
+alpha)*sin(Pi*alpha)*(1+exp(s))^(-beta)*beta+beta*(-exp(2*s)-1+s*(-alpha+beta)*
+exp(s))*sin(Pi*alpha)*2^(1-beta)-8*exp(s)*(exp(s)-1)^(-beta)*s^(-alpha)*(1+exp(
+s))^alpha*sin(Pi*beta)*alpha+beta*2^(-beta)*sin(Pi*alpha)*(s*(-alpha+beta)*exp(
+2*s)+beta*s-alpha*s-4*exp(s)))/(1/2*exp(2*s)+1/2+exp(s))/GAMMA(1-beta)/alpha/(
+alpha+beta)/sin(Pi*beta)/GAMMA(alpha-1)/s^2/sin(Pi*alpha):
+Linf_abPi := unapply(Linf_abPi_expr, alpha,beta,s):
+
+Linf_0bPi_expr := 1/16*(-Pi*beta*(s*beta*exp(s)-exp(2*s)-1)*2^(1-beta)+2*beta
+*sin(Pi*beta)*(1/2*exp(2*s)+1/2+exp(s))*s^(1-beta)-8*exp(s)*Pi*(1+exp(s))^(-
+beta)*beta+8*exp(s)*(exp(s)-1)^(-beta)*sin(Pi*beta)-Pi*beta*(exp(2*s)*beta*s+
+beta*s-4*exp(s))*2^(-beta)-4*sin(Pi*beta)*s^(-beta)*(1/2*exp(2*s)+1/2+exp(s)))/
+beta/Pi/sin(Pi*beta)/(exp(2*s)+1+2*exp(s))/GAMMA(1-beta)/s^2:
+Linf_0bPi := unapply(Linf_0bPi_expr, beta,s):
+
+Linf_a0Pi_expr := -1/8*(-1/2*alpha^2*Pi*(2^(1+alpha)*exp(s)+2^alpha*(exp(2*s
+)+1))*s^(1-alpha)+4*exp(s)*s^(-alpha)*(1+exp(s))^alpha*Pi*alpha-4*exp(s)*(exp(s
+)-1)^alpha*s^(-alpha)*sin(Pi*alpha)-2*alpha*Pi*((1/4*exp(2*s)+1/4)*2^(1+alpha)+
+2^alpha*exp(s))*s^(-alpha)+(alpha*s+2)*(1/2*exp(2*s)+1/2+exp(s))*sin(Pi*alpha))
+*(alpha-1)/alpha/Pi/(exp(2*s)+1+2*exp(s))/GAMMA(1+alpha)/sin(Pi*alpha)/s^2:
+Linf_a0Pi := unapply(Linf_a0Pi_expr, alpha,s):
+
+Linf_1bPi_expr := 1/8*((1+exp(s))*(-1+beta)*s^(1-beta)+4*(exp(s)-1)^(-beta)*
+exp(s)-2*s^(-beta)*(1+exp(s)))/(1+exp(s))/(1+beta)/Pi/GAMMA(1-beta)/s^3:
+Linf_1bPi := unapply(Linf_1bPi_expr, beta,s):
+
+Linf_a1Pi_expr := 1/2*(exp(s)*(exp(s)-1)^alpha*s^(-alpha)-3/16*(alpha*s-s+2)
+*(exp(s)+exp(2*s)+1/3*exp(3*s)+1/3))*(alpha-1)/Pi/GAMMA(alpha+2)/(exp(3*s)+3*
+exp(s)+3*exp(2*s)+1)/s^2:
+Linf_a1Pi := unapply(Linf_a1Pi_expr, alpha,s):
+
+Linf_00Pi_expr := 1/8*(4*exp(s)*ln(1+exp(s))-4*exp(s)*ln(exp(s)-1)-2*(1/2*exp(2*
+s)+1/2+exp(s))*(-ln(s)+ln(2)))/Pi/s^2/(exp(2*s)+1+2*exp(s)):
+Linf_00Pi := unapply(Linf_00Pi_expr, s):
+
+Linf_10Pi_expr := 1/8*((-s+2)*exp(s)-s-2)/(1+exp(s))/Pi/s^3:
+Linf_10Pi := unapply(Linf_10Pi_expr, s):
+
+Linf_01Pi_expr := 1/32*((-3*s+6)*exp(2*s)+(-s+2)*exp(3*s)+(-3*s-10)*exp(s)-s+2)/
+Pi/(exp(3*s)+3*exp(s)+3*exp(2*s)+1)/s^2:
+Linf_01Pi := unapply(Linf_01Pi_expr, s):
+
+Linf_11Pi_expr := 0:
+Linf_11Pi := unapply(Linf_11Pi_expr, s):
+
+
+# ---- DERIVATIVES: d/ds L_infty (stored below as dLinf_*) ----
+dLinf_abphi_expr := 2*(alpha-1)*(1/2*sin(Pi*alpha)*((((-2*s+2)*alpha+
+beta*s+4)*cos(phi)+alpha*s)*exp(3*s)+((s-1)*alpha-beta*s-2)*exp(4*s)+s*(-2*
+alpha*cos(phi)+beta+alpha)*exp(2*s)-exp(s)*(beta*s+2*alpha+4)*cos(phi)+exp(s)*
+alpha*s+alpha+2)*(1/s*(exp(s)-1))^alpha*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*
+beta)+(1+exp(s))^(-beta)*sin(Pi*alpha)*((((s-1)*alpha-beta*s-2)*cos(phi)-1/2*s*
+(alpha+beta))*exp(3*s)+((1/2-1/2*s)*alpha+1+1/2*beta*s)*exp(4*s)+((alpha+beta)*
+cos(phi)-1/2*alpha+1/2*beta)*s*exp(2*s)+exp(s)*(alpha+2)*cos(phi)-1/2*s*(alpha+
+beta)*exp(s)-1-1/2*alpha)*(1/s*(exp(s)-1))^alpha+(((((alpha-beta)*cos(phi)+1/2*
+alpha+1/2*beta)*exp(3*s)+(-1/2*alpha+1/2*beta)*exp(4*s)+((-beta-alpha)*cos(phi)
+-1/2*alpha+1/2*beta)*exp(2*s)+1/2*exp(s)*(alpha+beta))*(1+exp(s))^alpha+(exp(2*
+s)+1-2*exp(s)*cos(phi))^(1/2*alpha)*(((beta-1/2*alpha)*cos(phi)-1/2*beta)*exp(3
+*s)+(1/2*alpha-1/2*beta)*exp(4*s)+(-1/2*beta-1/2*alpha+cos(phi)*beta)*exp(2*s)
+-1/2*exp(s)*(-alpha*cos(phi)+beta)))*s^(-alpha+1-beta)+(alpha+2)*s^(-beta-alpha)
+*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*((exp(2*s)+1-2*exp(s)*cos
+(phi))^(1/2*alpha)-(1+exp(s))^alpha))*sin(Pi*beta)*(s/(exp(s)-1))^beta+1/4*(sin
+(1/2*phi)^alpha-1)*(cos(phi)*(exp(3*s)-exp(s))*2^(1+alpha)-2^alpha*(exp(4*s)-1)
+)*(-alpha+beta)*(alpha+beta+1)*sin(Pi*beta)*s^(-alpha+1-beta)-(sin(1/2*phi)^
+alpha-1)*(-1/4*(alpha+beta)*(exp(4*s)-1)*2^(1+alpha)+(cos(phi)*(alpha+2+beta)*
+exp(3*s)-exp(4*s)+1+(-alpha-2-beta)*exp(s)*cos(phi))*2^alpha)*sin(Pi*beta)*s^(-
+beta-alpha)+1/4*sin(Pi*alpha)*(sin(1/2*phi)^(-beta)-1)*(s*cos(phi)*(-alpha+beta
+)*(exp(3*s)-exp(s))*2^(1-beta)-2^(-beta)*(8*exp(3*s)*cos(phi)+(-alpha*s+beta*s-4)
+*exp(4*s)-beta*s+alpha*s-8*exp(s)*cos(phi)+4)))/(alpha+beta)/sin(Pi*beta)/(
+exp(2*s)+1-2*exp(s)*cos(phi))/sin(Pi*alpha)/(Pi-phi)^2/GAMMA(1-beta)/GAMMA(1+
+alpha)/s^3/(exp(2*s)-1):
+dLinf_abphi := unapply(dLinf_abphi_expr, alpha,beta,phi,s):
+
+dLinf_0bphi_expr := 1/4*(2*(cos(phi)*(beta*s+4)*exp(3*s)+(-beta*s-2)*exp(4
+*s)+s*beta*exp(2*s)+2+(-beta*s-4)*exp(s)*cos(phi))*Pi*(exp(2*s)+1-2*exp(s)*cos(
+phi))^(-1/2*beta)+2*(((cos(phi)-1/2)*exp(3*s)-1/2*exp(4*s)+(cos(phi)-1/2)*exp(2
+*s)-1/2*exp(s))*beta*s^(1-beta)+2*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*
+s)+1/2)*s^(-beta))*(s/(exp(s)-1))^beta*sin(Pi*beta)*ln(exp(2*s)+1-2*exp(s)*cos(
+phi))-4*((((cos(phi)-1/2)*exp(3*s)-1/2*exp(4*s)+(cos(phi)-1/2)*exp(2*s)-1/2*exp
+(s))*beta*ln(1+exp(s))-1/2*(cos(phi)+1)*(exp(3*s)+exp(s)-2*exp(2*s)))*s^(1-beta
+)+2*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*ln(1+exp(s))*s^(-beta)
+)*sin(Pi*beta)*(s/(exp(s)-1))^beta+(s*beta*cos(phi)*(exp(3*s)-exp(s))*2^(1-beta
+)-(8*exp(3*s)*cos(phi)+(beta*s-4)*exp(4*s)-beta*s-8*exp(s)*cos(phi)+4)*2^(-beta
+))*Pi*sin(1/2*phi)^(-beta)+2*ln(sin(1/2*phi))*(exp(3*s)*cos(phi)-exp(s)*cos(phi
+)-1/2*exp(4*s)+1/2)*(1+beta)*beta*sin(Pi*beta)*s^(1-beta)-4*Pi*((s*beta*cos(phi
+)+1/2*beta*s+2*cos(phi))*exp(3*s)+(-1/2*beta*s-1)*exp(4*s)-(cos(phi)+1/2)*beta*
+s*exp(2*s)+1/2*s*beta*exp(s)-2*exp(s)*cos(phi)+1)*(1+exp(s))^(-beta)-s*Pi*beta*
+cos(phi)*(exp(3*s)-exp(s))*2^(1-beta)-4*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*
+exp(4*s)+1/2)*(beta+2)*s^(-beta)*sin(Pi*beta)*ln(sin(1/2*phi))+(8*exp(3*s)*cos(
+phi)+(beta*s-4)*exp(4*s)-beta*s-8*exp(s)*cos(phi)+4)*Pi*2^(-beta))/(exp(2*s)-1)
+/Pi/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/beta/GAMMA(1-beta)/s^3/(Pi-phi)^2/sin(Pi
+*beta):
+dLinf_0bphi := unapply(dLinf_0bphi_expr, beta,phi,s):
+
+dLinf_a0phi_expr := (1/2*Pi*(alpha*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-exp
+(4*s)+exp(2*s))*s^(1-alpha)-2*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1
+/2)*(alpha+2)*s^(-alpha))*(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2*alpha)-1/2*(((-2+
+(s-1)*alpha)*cos(phi)-1/2*alpha*s)*exp(3*s)+(1+(1/2-1/2*s)*alpha)*exp(4*s)+s*
+alpha*(cos(phi)-1/2)*exp(2*s)+exp(s)*(alpha+2)*cos(phi)-1/2*exp(s)*alpha*s-1/2*
+alpha-1)*(1/s*(exp(s)-1))^alpha*sin(Pi*alpha)*ln(exp(2*s)+1-2*exp(s)*cos(phi))+
+((((-2+(s-1)*alpha)*cos(phi)-1/2*alpha*s)*exp(3*s)+(1+(1/2-1/2*s)*alpha)*exp(4*
+s)+s*alpha*(cos(phi)-1/2)*exp(2*s)+exp(s)*(alpha+2)*cos(phi)-1/2*exp(s)*alpha*s
+-1/2*alpha-1)*ln(1+exp(s))+1/2*s*(cos(phi)+1)*(exp(3*s)+exp(s)-2*exp(2*s)))*sin
+(Pi*alpha)*(1/s*(exp(s)-1))^alpha+1/4*Pi*((cos(phi)*(exp(3*s)-exp(s))*2^(1+
+alpha)-2^alpha*(exp(4*s)-1))*(1+alpha)*sin(1/2*phi)^alpha+((-4*cos(phi)-2)*exp(
+3*s)+2*exp(4*s)+(4*cos(phi)+2)*exp(2*s)-2*exp(s))*(1+exp(s))^alpha-(cos(phi)*(
+exp(3*s)-exp(s))*2^(1+alpha)-2^alpha*(exp(4*s)-1))*(1+alpha))*alpha*s^(1-alpha)
++(-1/4*(exp(4*s)-1)*alpha*2^(1+alpha)+(cos(phi)*(alpha+2)*exp(3*s)-exp(4*s)+1+(
+-alpha-2)*exp(s)*cos(phi))*2^alpha)*Pi*s^(-alpha)*sin(1/2*phi)^alpha-1/2*(exp(3
+*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*(alpha*s+4)*sin(Pi*alpha)*ln(sin
+(1/2*phi))+Pi*s^(-alpha)*((exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*
+(alpha+2)*(1+exp(s))^alpha+1/4*(exp(4*s)-1)*alpha*2^(1+alpha)-(cos(phi)*(alpha+
+2)*exp(3*s)-exp(4*s)+1+(-alpha-2)*exp(s)*cos(phi))*2^alpha))*(alpha-1)/(exp(2*s
+)-1)/Pi/alpha/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/GAMMA(1+alpha)/s^3/(Pi-phi)^2/
+sin(Pi*alpha):
+dLinf_a0phi := unapply(dLinf_a0phi_expr, alpha,phi,s):
+
+dLinf_1bphi_expr := (((((1-beta)*exp(2*s)-exp(s)*(1+beta))*s^(-beta-3)-3*s
+^(-beta-4)*(exp(2*s)-1))*(s/(exp(s)-1))^beta+((beta^2+beta-2)*s^(-beta-3)-2*s^(
+-beta-4)*(beta+3))*(sin(1/2*phi)-1)*(exp(s)-1))*(exp(2*s)+1-2*exp(s)*cos(phi))^
+(1/2)+(((1+(-2*beta+1)*cos(phi))*exp(2*s)+(-1+beta)*exp(3*s)+exp(s)*(beta-cos(
+phi)))*s^(-beta-3)+6*s^(-beta-4)*((-cos(phi)-1/2)*exp(2*s)+1/2*exp(3*s)-1/2+(
+cos(phi)+1/2)*exp(s)))*(s/(exp(s)-1))^beta)/(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2
+)/Pi/(Pi-phi)^2/(exp(s)-1)/(1+beta)/GAMMA(1-beta):
+dLinf_1bphi := unapply(dLinf_1bphi_expr, beta,phi,s):
+
+dLinf_a1phi_expr := -((-sin(1/2*phi)*(((alpha-1)*s-alpha-2)
+*exp(4*s)+(((-2*alpha+2)*s+2*alpha+4)*cos(phi)+s*(1+alpha))
+*exp(3*s)-2*((1+alpha)*cos(phi)-1/
+2*alpha+1/2)*s*exp(2*s)-2*exp(s)*(alpha+2)*cos(phi)+s*(1+alpha)*exp(s)+alpha+2)
+*(1/s*(exp(s)-1))^alpha-1/4*(4+(alpha-1)*s)*(sin(1/2*phi)-1)*((-2*cos(phi)+1)*
+exp(4*s)+2*exp(s)*cos(phi)+2*exp(2*s)*cos(phi)-2*exp(3*s)*cos(phi)+exp(5*s)-exp
+(s)-1))*(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)+((((-2*alpha+1)*s+2*alpha+4)*cos(
+phi)+(2*alpha-1)*s-alpha-2)*exp(4*s)+(((-4*alpha+1)*s+2*alpha+4)*cos(phi)+s*(2*
+alpha+1))*exp(3*s)+(((-2*alpha-1)*s-2*alpha-4)*cos(phi)+s*(2*alpha+1))*exp(2*s)
++((alpha-1)*s-alpha-2)*exp(5*s)-exp(s)*(s+2*alpha+4)*cos(phi)+(alpha*s+alpha+2)
+*exp(s)+alpha+2)*sin(1/2*phi)*(1/s*(exp(s)-1))^alpha)/(exp(2*s)+1-2*exp(s)*cos(
+phi))^(3/2)*(alpha-1)/Pi/s^3/GAMMA(alpha+2)/(Pi-phi)^2/(exp(s)-exp(2*s)-exp(3*s
+)+1)/sin(1/2*phi):
+dLinf_a1phi := unapply(dLinf_a1phi_expr, alpha,phi,s):
+
+dLinf_00phi_expr := 1/4*((-2*exp(s)*cos(phi)+2*exp(3*s)*cos(phi)-exp(4*s)+1)*
+ln(exp(2*s)+1-2*exp(s)*cos(phi))^2+((8*exp(s)*cos(phi)-8*exp(3*s)*cos(phi)+4*
+exp(4*s)-4)*ln(1/s*(exp(s)-1))+((2*s-8*ln(s))*cos(phi)-2*s)*exp(3*s)+4*exp(4*s)
+*ln(s)+4*s*(cos(phi)-1)*exp(2*s)+2*exp(s)*(s+4*ln(s))*cos(phi)-2*exp(s)*s-4*ln(
+s))*ln(exp(2*s)+1-2*exp(s)*cos(phi))+((-16*exp(s)*cos(phi)+16*exp(3*s)*cos(phi)
+-8*exp(4*s)+8)*ln(1+exp(s))-4*s*(cos(phi)+1)*(exp(3*s)+exp(s)-2*exp(2*s)))*ln(1
+/s*(exp(s)-1))+(8*exp(s)*cos(phi)-8*exp(3*s)*cos(phi)+4*exp(4*s)-4)*ln(sin(1/2*
+phi))^2+8*(-2*exp(3*s)*cos(phi)+2*exp(s)*cos(phi)+exp(4*s)-1)*(ln(2)-ln(s)+1/2)
+*ln(sin(1/2*phi))+(8*exp(s)*cos(phi)-8*exp(3*s)*cos(phi)+4*exp(4*s)-4)*ln(1+exp
+(s))^2+((16*cos(phi)*ln(s)+8*s)*exp(3*s)-16*s*exp(2*s)*cos(phi)-16*exp(s)*cos(
+phi)*ln(s)+8*exp(s)*s-8*exp(4*s)*ln(s)+8*ln(s))*ln(1+exp(s))-4*ln(s)*s*(cos(phi
+)+1)*(exp(3*s)+exp(s)-2*exp(2*s)))/(exp(2*s)-1)/(-exp(2*s)-1+2*exp(s)*cos(phi))
+/Pi/s^3/(Pi-phi)^2:
+dLinf_00phi := unapply(dLinf_00phi_expr, phi,s):
+
+dLinf_10phi_expr := (((s-3)*exp(2*s)-3-exp(s)*(s-6)*cos(phi))*(exp(2*s)+1-2*
+exp(s)*cos(phi))^(1/2)-4*(s+3)*(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)*sin(1/2*phi)+
+((2*s-6)*cos(phi)-2*s-3)*exp(2*s)+(-s+3)*exp(3*s)+(4*s+6)*exp(s)*cos(phi)+(-s+3
+)*exp(s)-2*s-3)/(Pi-phi)^2/(-exp(2*s)-1+2*exp(s)*cos(phi))/Pi/s^4:
+dLinf_10phi := unapply(dLinf_10phi_expr, phi,s):
+
+dLinf_01phi_expr := 1/2*(((((s-4)*cos(phi)-3*s)*exp(3*s)+(6*cos(phi)*s-s)*exp
+(2*s)+(2-1/2*s)*exp(4*s)+exp(s)*(s+4)*cos(phi)-1/2*s-2-3*s*exp(s))*sin(1/2*phi)
+-(s-4)*((cos(phi)-1)*exp(3*s)+(2*cos(phi)-1)*exp(2*s)+exp(s)*cos(phi)-exp(s)-1/
+2*exp(4*s)-1/2))*(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)-2*sin(1/2*phi)*(((s+4)*
+cos(phi)-2*s-4)*exp(3*s)+((2*s+8)*cos(phi)-s-4)*exp(2*s)+(-s-2)*exp(4*s)+exp(s)
+*(s+4)*cos(phi)-4*exp(s)-2))/(exp(2*s)+1-2*exp(s)*cos(phi))^(3/2)/sin(1/2*phi)/
+Pi/s^3/(1+exp(s))^2/(Pi-phi)^2:
+dLinf_01phi := unapply(dLinf_01phi_expr, phi,s):
+
+dLinf_11phi_expr := 0:
+dLinf_11phi := unapply(dLinf_11phi_expr, phi,s):
+
+dLinf_abPi_expr := 1/16*(((exp(4*s)-1)*(alpha^2+(1+beta)*alpha-beta)*2
+^(1+alpha)-4*2^alpha*(-(alpha-1)*(alpha+2+beta)*exp(3*s)+exp(4*s)-1+(alpha^2+(1
++beta)*alpha-beta-2)*exp(s)))*s^3*alpha*sin(Pi*beta)*s^(-3-alpha-beta)+8*(alpha
+-1)*(-1/8*s^3*alpha*sin(Pi*beta)*((exp(3*s)-exp(s))*2^(1+alpha)+2^alpha*(exp(4*
+s)-1))*(alpha+beta+1)*(-alpha+beta)*s^(-alpha-2-beta)-(exp(s)-1)^alpha*beta*sin
+(Pi*alpha)*s^3*((exp(s)-exp(3*s))*(alpha+2)*s^(-alpha-3)+((-beta+alpha-1)*exp(3
+*s)+(alpha+2+beta)*exp(2*s)-exp(s))*s^(-alpha-2))*(1+exp(s))^(-beta)
++s^(-alpha-3)*sin(Pi*beta)*s^3*(1+exp(s))^alpha*alpha*(exp(s)-exp(3*s))
+*(alpha+2)*(exp(s)-1)^(-beta)-s^3*alpha*sin(Pi*beta)*(exp(s)-1)^(-beta)
+*(1+exp(s))^alpha*((beta-
+alpha+1)*exp(3*s)+(beta+alpha-2)*exp(2*s)+exp(s))*s^(-alpha-2)+1/8*(-s*(exp(s)-
+exp(3*s))*(-alpha+beta)*2^(1-beta)+2^(-beta)*(-8*exp(3*s)+(-alpha*s+beta*s-4)*
+exp(4*s)-beta*s+alpha*s+8*exp(s)+4))*beta*sin(Pi*alpha)))/(alpha+beta)/(exp(4*s
+)-2*exp(s)+2*exp(3*s)-1)/beta/alpha/GAMMA(-beta)/GAMMA(alpha)/sin(Pi*alpha)/sin
+(Pi*beta)/s^3:
+dLinf_abPi := unapply(dLinf_abPi_expr, alpha,beta,s):
+
+dLinf_0bPi_expr := 1/16*(-4*s^3*(beta+2)*(-1/2*exp(4*s)-exp(3*s)+exp(s)+1/
+2)*sin(Pi*beta)*s^(-beta-3)+2*beta*(1+beta)*s^3*(-1/2*exp(4*s)-exp(3*s)+exp(s)+
+1/2)*sin(Pi*beta)*s^(-beta-2)-8*((-2+(-beta-1)*s)*exp(3*s)+s*(beta+2)*exp(2*s)-
+exp(s)*(s-2))*beta*Pi*(1+exp(s))^(-beta)-8*((2+(1+beta)*s)*exp(3*s)+s*(-2+beta)
+*exp(2*s)+exp(s)*(s-2))*sin(Pi*beta)*(exp(s)-1)^(-beta)-beta*(s*beta*(exp(s)-
+exp(3*s))*2^(1-beta)-2^(-beta)*(-8*exp(3*s)+(beta*s-4)*exp(4*s)-beta*s+8*exp(s)
++4))*Pi)/(-exp(4*s)-2*exp(3*s)+2*exp(s)+1)/GAMMA(-beta)/sin(Pi*beta)/beta^2/Pi/
+s^3:
+
+dLinf_0bPi := unapply(dLinf_0bPi_expr, beta,s):
+
+dLinf_a0Pi_expr := 1/16*(s^3*(8*Pi*alpha*(alpha+2)*(alpha-1)*(exp(s)-exp(
+3*s))*(1+exp(s))^alpha-8*sin(Pi*alpha)*(alpha+2)*(alpha-1)*(exp(s)-exp(3*s))*(
+exp(s)-1)^alpha+alpha*(alpha*(exp(4*s)-1)*(1+alpha)*2^(1+alpha)-4*2^alpha*((-
+alpha^2-alpha+2)*exp(3*s)+exp(4*s)-1+(alpha^2+alpha-2)*exp(s)))*Pi)*s^(-alpha-3
+)-((8*((1-alpha)*exp(3*s)+(alpha-2)*exp(2*s)+exp(s))*alpha*Pi*(1+exp(s))^alpha+
+8*((alpha-1)*exp(3*s)+(alpha+2)*exp(2*s)-exp(s))*sin(Pi*alpha)*(exp(s)-1)^alpha
++alpha^2*(1+alpha)*((exp(s)-exp(3*s))*2^(1+alpha)-2^alpha*(exp(4*s)-1))*Pi)*s^3
+*s^(-alpha-2)-2*(-1/2*exp(4*s)-exp(3*s)+exp(s)+1/2)*sin(Pi*alpha)*(alpha*s+4))*
+(alpha-1))/(-exp(4*s)-2*exp(3*s)+2*exp(s)+1)/sin(Pi*alpha)/GAMMA(alpha)/alpha^2
+/Pi/s^3:
+dLinf_a0Pi := unapply(dLinf_a0Pi_expr, alpha,s):
+
+dLinf_1bPi_expr := 1/8*(4*(-1/2*exp(4*s)-exp(3*s)+exp(s)+1/2)*s^4*(beta+3)
+*s^(-beta-4)-2*(-1/2*exp(4*s)-exp(3*s)+exp(s)+1/2)*s^4*(beta+2)*(-1+beta)*s^(-
+beta-3)+4*((2*beta*s-s+3)*exp(3*s)+(beta*s+3)*exp(4*s)+s*beta*exp(2*s)+exp(s)*s
+-3*exp(s)-3*exp(2*s))*(exp(s)-1)^(-beta))/(1+exp(s))^3/Pi/GAMMA(-beta)/beta/(
+exp(s)-1)/(1+beta)/s^4:
+dLinf_1bPi := unapply(dLinf_1bPi_expr, beta,s):
+
+dLinf_a1Pi_expr := -5/2*((exp(7*s)+1/5*exp(8*s)-1/5*exp(s)-exp(2*s)-9/5*
+exp(3*s)-exp(4*s)+exp(5*s)+9/5*exp(6*s))*s^3*(alpha+2)*(exp(s)-1)^alpha*s^(-
+alpha-3)-6/5*s^3*(exp(s)-1)^alpha*((1/6*alpha-1/3)*exp(2*s)+(alpha+1/2)*exp(3*s
+)+(5/2*alpha+5/3)*exp(4*s)+(5/2*alpha-1)*exp(6*s)+(alpha-7/6)*exp(7*s)+(1/6*
+alpha-1/3)*exp(8*s)+(10/3*alpha+5/6)*exp(5*s)-1/6*exp(s))*s^(-alpha-2)-3/5*(
+alpha*s-s+4)*(exp(7*s)+9/16*exp(8*s)+1/6*exp(9*s)+1/48*exp(10*s)-1/6*exp(s)-9/
+16*exp(2*s)-exp(3*s)-7/8*exp(4*s)+7/8*exp(6*s)-1/48))*(alpha-1)/(exp(s)-1)/(1+
+alpha)/alpha/GAMMA(alpha)/Pi/(1+exp(s))^9/s^3:
+dLinf_a1Pi := unapply(dLinf_a1Pi_expr, alpha,s):
+
+dLinf_11Pi_expr := 0:
+dLinf_11Pi := unapply(dLinf_11Pi_expr, s):
+
+# ---- Derived exact Pi-corner derivatives from value expressions ----
+dLinf_00Pi_expr := diff(Linf_00Pi_expr, s):
+dLinf_00Pi := unapply(dLinf_00Pi_expr, s):
+
+dLinf_10Pi_expr := diff(Linf_10Pi_expr, s):
+dLinf_10Pi := unapply(dLinf_10Pi_expr, s):
+
+dLinf_01Pi_expr := diff(Linf_01Pi_expr, s):
+dLinf_01Pi := unapply(dLinf_01Pi_expr, s):
+
+dLinf_11Pi_expr := 0:
+dLinf_11Pi := unapply(dLinf_11Pi_expr, s):
+
+
+# ============================================================
+#  m_inf grid search (exact s-derivatives, snap-to-edges)
+#  Uses the Linf_* and dLinf_* procedures defined above.
+# ============================================================
+
+# ---------------- USER INPUTS ----------------
+phi0 := 0.061:
+sLo  := 1.0:
+sHi  := 30.0:          # or 20.0, 50.0, etc.
+NsBracket := 400:      # increase when sHi increases
+
+Nalpha := 21:
+Nbeta  := 21:
+Nphi   := 21:
+
+epsEdge := 1e-12:
+epsPhi  := 1e-12:
+
+
+rootTol   := 1e-7:
+Kprint    := 200:
+
+# ---------------- HELPERS ----------------
+CosGrid := proc(L,R,N)
+  local i;
+  if N <= 1 then
+    return [evalf(L)];
+  fi;
+  return [seq(evalf(L + (R-L)*(1-cos(Pi*i/(N-1)))/2), i=0..N-1)];
+end proc:
+
+LogGrid := proc(sL,sR,M)
+  local i, a, b;
+  a := evalf(ln(sL)); 
+  b := evalf(ln(sR));
+  if M <= 1 then
+    return [evalf(sL)];
+  fi;
+  return [seq(evalf(exp(a + (b-a)*i/(M-1))), i=0..M-1)];
+end proc:
+
+
+Snap01 := proc(x)
+  local xx;
+  xx := evalf(x);
+  if abs(xx) < epsEdge then return 0.0; fi;
+  if abs(1-xx) < epsEdge then return 1.0; fi;
+  return xx;
+end proc:
+
+SnapPhi := proc(ph)
+  local pp;
+  pp := evalf(ph);
+  if abs(Pi-pp) < epsPhi then return Pi; fi;
+  return pp;
+end proc:
+
+Dedup := proc(L::list, tol::numeric)
+  local S, out, i;
+  if nops(L)=0 then return []; fi;
+  S := sort(L);
+  out := [S[1]];
+  for i from 2 to nops(S) do
+    if abs(S[i]-out[-1]) > tol then
+      out := [op(out), S[i]];
+    fi;
+  od;
+  return out;
+end proc:
+
+SafeEval := proc(expr)
+  local v;
+  try
+    v := evalf(expr);
+  catch:
+    return Float(undefined);
+  end try;
+  return v;
+end proc:
+
+# ---------------- DISPATCHERS (snap-to-edges) ----------------
+Linf_val := proc(alpha,beta,phi,s)
+  local a,b,p;
+
+  a := Snap01(alpha); 
+  b := Snap01(beta); 
+  p := SnapPhi(phi);
+
+  if p = Pi then
+    if a=0.0 and b=0.0 then return SafeEval(Linf_00Pi(s)); fi;
+    if a=1.0 and b=0.0 then return SafeEval(Linf_10Pi(s)); fi;
+    if a=0.0 and b=1.0 then return SafeEval(Linf_01Pi(s)); fi;
+    if a=1.0 and b=1.0 then return 0.0; fi;
+
+    if a=0.0 then return SafeEval(Linf_0bPi(b,s)); fi;
+    if b=0.0 then return SafeEval(Linf_a0Pi(a,s)); fi;
+    if a=1.0 then return SafeEval(Linf_1bPi(b,s)); fi;
+    if b=1.0 then return SafeEval(Linf_a1Pi(a,s)); fi;
+
+    return SafeEval(Linf_abPi(a,b,s));
+  else
+    if a=0.0 and b=0.0 then return SafeEval(Linf_00phi(p,s)); fi;
+    if a=1.0 and b=1.0 then return 0.0; fi;
+
+    # mixed edges (avoid singular a0phi at a=1 and 0bphi at b=1)
+    if a=1.0 and b=0.0 then return SafeEval(Linf_1bphi(0.0,p,s)); fi;
+    if a=0.0 and b=1.0 then return SafeEval(Linf_a1phi(0.0,p,s)); fi;
+
+    if a=0.0 then return SafeEval(Linf_0bphi(b,p,s)); fi;
+    if b=0.0 then return SafeEval(Linf_a0phi(a,p,s)); fi;
+    if a=1.0 then return SafeEval(Linf_1bphi(b,p,s)); fi;
+    if b=1.0 then return SafeEval(Linf_a1phi(a,p,s)); fi;
+
+    return SafeEval(Linf_abphi(a,b,p,s));
+  fi;
+end proc:
+
+dLinf_val := proc(alpha,beta,phi,s)
+  local a,b,p;
+
+  a := Snap01(alpha); 
+  b := Snap01(beta); 
+  p := SnapPhi(phi);
+
+  if p = Pi then
+    if a=0.0 and b=0.0 then return SafeEval(dLinf_00Pi(s)); fi;
+    if a=1.0 and b=0.0 then return SafeEval(dLinf_10Pi(s)); fi;
+    if a=0.0 and b=1.0 then return SafeEval(dLinf_01Pi(s)); fi;
+    if a=1.0 and b=1.0 then return 0.0; fi;
+
+    if a=0.0 then return SafeEval(dLinf_0bPi(b,s)); fi;
+    if b=0.0 then return SafeEval(dLinf_a0Pi(a,s)); fi;
+    if a=1.0 then return SafeEval(dLinf_1bPi(b,s)); fi;
+    if b=1.0 then return SafeEval(dLinf_a1Pi(a,s)); fi;
+
+    return SafeEval(dLinf_abPi(a,b,s));
+  else
+    if a=0.0 and b=0.0 then return SafeEval(dLinf_00phi(p,s)); fi;
+    if a=1.0 and b=1.0 then return 0.0; fi;
+
+    # explicit mixed-edge derivatives
+    if a=1.0 and b=0.0 then return SafeEval(dLinf_10phi(p,s)); fi;
+    if a=0.0 and b=1.0 then return SafeEval(dLinf_01phi(p,s)); fi;
+
+    if a=0.0 then return SafeEval(dLinf_0bphi(b,p,s)); fi;
+    if b=0.0 then return SafeEval(dLinf_a0phi(a,p,s)); fi;
+    if a=1.0 then return SafeEval(dLinf_1bphi(b,p,s)); fi;
+    if b=1.0 then return SafeEval(dLinf_a1phi(a,p,s)); fi;
+
+    return SafeEval(dLinf_abphi(a,b,p,s));
+  fi;
+end proc:
+
+# ---------------- MIN OVER s in [sLo,sHi] via exact critical points ----------------
+FindCriticalS := proc(alpha,beta,phi)
+  local Sgrid, roots, i, a, b, g1, g2, sol, f;
+
+  roots := []:
+  Sgrid := LogGrid(sLo, sHi, NsBracket);
+
+  f := proc(ss) return dLinf_val(alpha,beta,phi,ss); end proc;
+
+  for i from 1 to nops(Sgrid)-1 do
+    a := Sgrid[i]; 
+    b := Sgrid[i+1];
+
+    g1 := f(a); 
+    g2 := f(b);
+
+    if not(type(g1,realcons) and type(g2,realcons)) then
+      next;
+    fi;
+
+    if g1 = 0 then
+      if a > sLo and a < sHi then roots := [op(roots), a]; fi;
+      next;
+    fi;
+
+    if g1*g2 <= 0 then
+      try
+        sol := fsolve(f, a..b);
+      catch:
+        sol := NULL;
+      end try;
+
+      if sol <> NULL and type(sol,numeric) then
+        sol := evalf(sol);
+        if sol > sLo and sol < sHi then
+          roots := [op(roots), sol];
+        fi;
+      fi;
+    fi;
+  od;
+
+  roots := Dedup(roots, rootTol);
+
+  # exclude endpoints in root list (endpoints are evaluated separately)
+  roots := select(r -> (r > sLo+1e-10) and (r < sHi-1e-10), roots);
+
+  return roots;
+end proc:
+
+MinOverS_mInf := proc(alpha,beta,phi)
+  local roots, bestv, bests, v, r;
+
+  roots := FindCriticalS(alpha,beta,phi);
+
+    bests := sLo;
+  bestv := Linf_val(alpha,beta,phi, sLo);
+  if not(type(bestv,realcons)) then
+    bestv := +infinity;
+  fi;
+
+  # ALSO check top endpoint sHi
+  v := Linf_val(alpha,beta,phi, sHi);
+  if type(v,realcons) and v < bestv then
+    bestv := v;
+    bests := sHi;
+  fi;
+
+  for r in roots do
+    v := Linf_val(alpha,beta,phi, r);
+    if type(v,realcons) and v < bestv then
+      bestv := v; 
+      bests := r;
+    fi;
+  od;
+
+
+  return [bestv, bests, roots];
+end proc:
+
+# ---------------- GRID SEARCH OVER (alpha,beta,phi) ----------------
+GridSearch3D_mInf := proc()
+  local aG, bG, pG, a, b, p,
+        res, val, sstar,
+        bestVal, bestA, bestB, bestP, bestS,
+        cnt, tot;
+
+  aG := CosGrid(0.0, 1.0, Nalpha):
+  bG := CosGrid(0.0, 1.0, Nbeta):
+  pG := CosGrid(phi0, Pi, Nphi):
+
+  tot := nops(aG)*nops(bG)*nops(pG):
+  cnt := 0:
+
+  bestVal := +infinity:
+  bestA := 0.0: bestB := 0.0: bestP := phi0: bestS := sLo:
+
+  printf("START m_inf grid search  tot=%d  s in [%.3f,%.3f]\n", tot, sLo, sHi);
+
+  for a in aG do
+    for b in bG do
+      for p in pG do
+        cnt := cnt + 1;
+
+        res := MinOverS_mInf(a,b,p);
+        val := res[1]; 
+        sstar := res[2];
+
+        if type(val,realcons) and val < bestVal then
+          bestVal := val;
+          bestA := evalf(a); bestB := evalf(b); bestP := evalf(p); bestS := evalf(sstar);
+
+          printf("NEW BEST: %.15g at (a,b,phi,s)=(%.12f,%.12f,%.12f,%.12f)  [%d/%d]\n",
+                 bestVal, bestA, bestB, bestP, bestS, cnt, tot);
+        fi;
+
+        if cnt mod Kprint = 0 then
+          printf("Progress: %d/%d  best=%.15g\n", cnt, tot, bestVal);
+        fi;
+
+      od;
+    od;
+  od;
+
+  printf("DONE.\n");
+  printf("BEST: %.15g at (a,b,phi,s)=(%.12f,%.12f,%.12f,%.12f)\n", bestVal, bestA, bestB, bestP, bestS);
+
+  return [bestVal, bestA, bestB, bestP, bestS];
+end proc:
+
+# ---- RUN ----
+ans := GridSearch3D_mInf():
+
+
+######################### OPTIONAL: Maple Optimization[Minimize] checks
+# These are slow global searches (high precision). They are not needed for the grid search above,
+# but can be used as an independent numerical check.
+
+Linf:=((1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+
+alpha)*s^(-beta-alpha)/GAMMA(1-beta)*((s/(exp(s)-1))^beta*((1+exp(s))^alpha-((
+exp(2*s)+1-2*exp(s)*cos(phi))^(1/2))^alpha)/(2^alpha-(2*sin(1/2*phi))^alpha)-1-\
+1/2*(alpha-beta)*s)/s^2-(1-alpha)*((2*sin(1/2*phi))^(-beta)-2^(-beta))/(Pi-phi)
+^2/sin(Pi*beta)/GAMMA(1-beta)/GAMMA(1+alpha)*((1/s*(exp(s)-1))^alpha*(((exp(2*s
+)+1-2*exp(s)*cos(phi))^(1/2))^(-beta)-(1+exp(s))^(-beta))/((2*sin(1/2*phi))^(-
+beta)-2^(-beta))-1-1/2*(alpha-beta)*s)/s^2)/(alpha+beta);
+
+### Large-s stable form (rewritten using exp(-s); cf. the discussion around eq. (87) in the paper)
+
+Linf_stable:=
+((1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+
+alpha)*s^(-alpha-beta)/GAMMA(1-beta)*((s/(1-exp(-s)))^beta*exp((alpha-beta)*s)*
+((1+exp(-s))^alpha-((1+exp(-2*s)-2*exp(-s)*cos(phi))^(1/2))^alpha)/(2^alpha-(2*
+sin(1/2*phi))^alpha)-1-1/2*(alpha-beta)*s)/s^2-(1-alpha)*((2*sin(1/2*phi))^(-
+beta)-2^(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)/GAMMA(1+alpha)*(((1-exp(
+-s))/s)^alpha*exp((alpha-beta)*s)*(((1+exp(-2*s)-2*exp(-s)*cos(phi))^(1/2))^(-
+beta)-(1+exp(-s))^(-beta))/((2*sin(1/2*phi))^(-beta)-2^(-beta))-1-1/2*(alpha-
+beta)*s)/s^2)/(alpha+beta);
+
+Digits := 400:
+with(Optimization):
+
+phi0 := 0.061:
+sLo  := 1:
+sHi  := 30:
+
+Minimize(Linf,
+         alpha=10^(-20)..1-10^(-20),
+         beta =10^(-20)..1-10^(-20),
+         s    =sLo..sHi,
+         phi  =phi0..Pi-10^(-20),initialpoint = [alpha=0.5, beta=0.5, phi=1.5, s=(sHi-sLo)/2]
+         ):
+
+evalf(%,10);
+
+
+phi0 := 0.061:
+sLo  := 30:
+sHi  := 100000:
+
+Minimize(Linf_stable,
+         alpha=10^(-20)..1-10^(-20),
+         beta =10^(-20)..1-10^(-20),
+         s    =sLo..sHi,
+         phi  =phi0..Pi-10^(-20),initialpoint = [alpha=0.5, beta=0.5, phi=1.5, s=(sHi-sLo)/2]
+         ):
+
+evalf(%,10);
+

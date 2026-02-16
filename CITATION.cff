@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use these materials, please cite this repository."
+title: "Brannan-Watson: Maple source code and animated figures"
+type: software
+authors:
+  - name: T. M. Dunster
+repository-code: "https://github.com/tmdunster/Brannan-Watson"
+url: "https://github.com/tmdunster/Brannan-Watson"
+license: "MIT"

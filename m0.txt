@@ -1,0 +1,610 @@
+restart:
+############################################################
+# m0 grid search for inf L0.
+#
+# Objective:
+#   L0(alpha,beta,phi;s) = s^(-1+beta) * L(alpha,beta,phi;s),  see eqs. (73)-(74).
+# We search on: alpha,beta in [0,1], phi in [phi0, pi), s in [0,1].
+# The value at s=0 is L0(...;0)=0, so only s in (0,1] needs to be sampled.
+#
+# Strategy:
+#   1) Build cosine-spaced grids in alpha, beta, phi (denser near 0 and 1).
+#   2) For each grid triple (alpha,beta,phi), minimize in s by checking s=1 and
+#      any interior critical points where d/ds L0 = 0 (found by bracketing + fsolve).
+#   3) Use exact closed-form boundary limits (alpha=0,1; beta=0,1; (0,0)) to avoid
+#      removable singularities and loss of significance near the edges.
+#
+# Notes:
+#   - The large symbolic formulas below are intentionally kept explicit (precomputed)
+#     because they are both faster and more numerically stable than recomputing them
+#     from scratch inside Maple.
+#   - Optional logging helpers (LogOpen/LogLine/LogClose) are included but not required.
+############################################################
+
+with(FileTools):
+
+############################################################
+# OPTIONAL DISK LOGGING
+#
+# LOGFD is a global file handle. If LOGFD is left as NULL, LogLine() is a no-op.
+# Typical use (optional):
+#   LogOpen("m0_search.log"):
+#   ... (add LogLine(...) calls where desired) ...
+#   LogClose():
+#
+# The fflush(LOGFD) call forces buffered output to be written immediately, which is
+# useful for long runs when monitoring progress from the log file.
+############################################################
+
+
+LOGFD := NULL:
+
+LogOpen := proc(fname::string)
+  global LOGFD;
+  LOGFD := FileTools:-Text:-Open(fname, create, append);
+end proc:
+
+LogClose := proc()
+  global LOGFD;
+  if LOGFD <> NULL then
+    FileTools:-Text:-Close(LOGFD);
+    LOGFD := NULL;
+  end if;
+end proc:
+
+LogLine := proc(msg::string)
+  global LOGFD;
+  if LOGFD = NULL then return; end if;
+  FileTools:-Text:-WriteString(LOGFD, msg||"\n");
+  fflush(LOGFD);     # force it to appear immediately on disk
+end proc:
+Digits := 60:
+
+############################################################
+# USER INPUTS
+############################################################
+N := 5:                  # grid points for alpha, beta, phi  (same N)
+phi0 := 0.061:
+phi_eps := 1e-6:          # avoid phi=Pi exactly
+sLo := 1e-8:              # s search lower bound (ignore s=0)
+epsEdge := 1e-40:         # snap alpha,beta to 0 or 1 if within epsEdge
+NsBracket := 90:          # bracketing resolution in s (log grid)
+rootTol := 1e-7:          # dedup tolerance for roots
+Kkeep := 10:              # keep top-K best grid points (for zooming later)
+Kprint := 250:           # print progress every Kprint grid points
+
+phiMax := evalf(Pi - phi_eps):
+
+############################################################
+# GRIDS (cosine-spaced including endpoints)
+############################################################
+CosGrid := proc(L,R,N)
+  # Cosine-spaced grid on [L,R] including endpoints; clusters points near L and R.
+  local i;
+  if N<=1 then return [evalf(L)]; fi;
+  [seq( evalf(L + (R-L)*(1-cos(Pi*i/(N-1)))/2), i=0..N-1 )];
+end proc:
+
+alphaGrid := CosGrid(0.0, 1.0, N):
+betaGrid  := CosGrid(0.0, 1.0, N):
+phiGrid   := CosGrid(phi0, phiMax, N):
+
+Snap01 := proc(x)
+  # Snap values extremely close to 0 or 1 onto the endpoint, so that the correct
+  # removable-limit formulas can be used on the boundary.
+  local xx;
+  xx := evalf(x);
+  if abs(xx) < epsEdge then return 0.0; fi;
+  if abs(1-xx) < epsEdge then return 1.0; fi;
+  return xx;
+end proc:
+
+############################################################
+# OBJECTIVE  L0(alpha,beta,phi;s)   (paper notation: eqs. (73)-(74))
+# - exact edges: (0,0), beta=0, alpha=0, alpha=1, beta=1
+# - interior: definition via K1, K2 and the prefactors (see paper around eq. (62))
+############################################################
+
+# (0,0) stable symbolic formula using q = 4 e^s sin^2(u/2)/(1+e^s)^2, u=Pi-phi
+L00_expr :=
+(
+  ( -ln(1- 4*exp(s)*sin((Pi-phi)/2)^2/(1+exp(s))^2 )/2 )/2
+  *(
+     2*ln(1+exp(s))
+     + ln(1- 4*exp(s)*sin((Pi-phi)/2)^2/(1+exp(s))^2 )/2
+     - ln(4)
+     - ln(cos((Pi-phi)/2))
+     + 2*ln( s/(exp(s)-1) )
+   )
+  -(
+     -ln(1- 4*exp(s)*sin((Pi-phi)/2)^2/(1+exp(s))^2 )/2
+     + ln(cos((Pi-phi)/2))
+   )*( ln(s/2) - ln(cos((Pi-phi)/2))/2 )
+)/( Pi*(Pi-phi)^2*s ):
+
+L00 := unapply(L00_expr, s, phi):
+
+# beta=0 removable-limit formula for L0 (exact, precomputed)
+L_beta0_expr :=
+-1/2*(-2*(exp(2*s)+1-2*exp(s)*cos(phi))^(alpha/2)*Pi
+      + ln(exp(2*s)+1-2*exp(s)*cos(phi))*(exp(s)-1)^alpha*sin(Pi*alpha)
+      + Pi*(s*alpha*2^alpha+2^(1+alpha))*sin(phi/2)^alpha
+      - sin(Pi*alpha)*(s^(1+alpha)*alpha+2*s^alpha)*ln(sin(phi/2))
+      - 2*(exp(s)-1)^alpha*ln(1+exp(s))*sin(Pi*alpha)
+      - Pi*(s*alpha*2^alpha+2^(1+alpha)-2*(1+exp(s))^alpha)
+     )*(alpha-1)/alpha/Pi/s/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha):
+
+L_beta0 := unapply(L_beta0_expr, s, alpha, phi):
+
+# alpha=0 removable-limit formula for L0 (exact, precomputed)
+L_alpha0_expr :=
+1/2*(-2*s^beta*(exp(2*s)+1-2*exp(s)*cos(phi))^(-beta/2)*Pi
+     - ln(exp(2*s)+1-2*exp(s)*cos(phi))*s^beta*(exp(s)-1)^(-beta)*sin(Pi*beta)
+     + Pi*(-2^(-beta)*s^(1+beta)*beta+2^(1-beta)*s^beta)*sin(phi/2)^(-beta)
+     + 2*ln(1+exp(s))*s^beta*(exp(s)-1)^(-beta)*sin(Pi*beta)
+     - 2^(1-beta)*s^beta*Pi
+     + 2*(1+exp(s))^(-beta)*s^beta*Pi
+     + (-beta*s+2)*sin(Pi*beta)*ln(sin(phi/2))
+     + 2^(-beta)*s^(1+beta)*beta*Pi
+    )/beta/Pi/s/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta):
+
+L_alpha0 := unapply(L_alpha0_expr, s, beta, phi):
+
+# alpha=1 removable limit objective
+L_alpha1_obj := proc(s, beta, phi)
+  local Delta, Disc, R, denom, K1;
+  Delta := Pi - phi;
+  Disc := exp(2*s)+1-2*exp(s)*cos(phi);
+  R := sqrt(Disc);
+  denom := 2 - 2*sin(phi/2);
+  if denom = 0 then return Float(undefined); fi;
+
+  K1 := ( (s/(exp(s)-1))^beta * ((1+exp(s)) - R)/denom - 1 - (1-beta)*s/2 )/s^2;
+
+  return evalf( (( (2-2*sin(phi/2))/Delta^2 )/Pi) * s/GAMMA(1-beta) * K1 /(1+beta) );
+end proc:
+
+# beta=1 removable limit objective
+L_beta1_obj := proc(s, alpha, phi)
+  local Delta, Disc, R, denom, K2, C2, A2;
+  Delta := Pi - phi;
+  Disc := exp(2*s)+1-2*exp(s)*cos(phi);
+  R := sqrt(Disc);
+  denom := (2*sin(phi/2))^(-1) - 1/2;
+  if denom = 0 then return Float(undefined); fi;
+
+  K2 := ( ((exp(s)-1)/s)^alpha * (R^(-1) - (1+exp(s))^(-1))/denom
+          - 1 - (alpha-1)*s/2 )/s^2;
+
+  C2 := denom/Delta^2;
+  A2 := (1-alpha)*C2/Pi;
+
+  return evalf( - A2 * s^(alpha+2)/GAMMA(1+alpha) * K2 /(alpha+1) );
+end proc:
+
+# interior objective (kernel version)
+R := (s,phi) -> sqrt(exp(2*s) + 1 - 2*exp(s)*cos(phi)):
+C1 := (alpha,phi) -> (2^alpha - (2*sin(phi/2))^alpha)/(Pi - phi)^2:
+C2 := (beta,phi)  -> ((2*sin(phi/2))^(-beta) - 2^(-beta))/(Pi - phi)^2:
+
+K1_int := proc(alpha,beta,phi,s)
+  local Delta, term;
+  Delta := Pi - phi;
+  term := ( (s/(exp(s)-1))^beta
+            * ((1+exp(s))^alpha - R(s,phi)^alpha)
+            /(Delta^2*C1(alpha,phi))
+           - 1
+           - (alpha-beta)*s/2 );
+  return term / s^2;
+end proc:
+
+K2_int := proc(alpha,beta,phi,s)
+  local Delta, term;
+  Delta := Pi - phi;
+  term := ( ((exp(s)-1)/s)^alpha
+            * ( R(s,phi)^(-beta) - (1+exp(s))^(-beta) )
+            /(Delta^2*C2(beta,phi))
+           - 1
+           - (alpha-beta)*s/2 );
+  return term / s^2;
+end proc:
+
+A1_int := (alpha,phi) -> (1-alpha)*C1(alpha,phi)/(sin(Pi*alpha)*GAMMA(1+alpha)):
+A2_int := (alpha,beta,phi) -> (1-alpha)*C2(beta,phi)/(sin(Pi*beta)*GAMMA(1-beta)):
+
+L0_interior := proc(alpha,beta,phi,s)
+  local L;
+  L := ( A1_int(alpha,phi)*s^(2-beta)/GAMMA(1-beta)*K1_int(alpha,beta,phi,s)
+          - A2_int(alpha,beta,phi)*s^(alpha+2)/GAMMA(1+alpha)*K2_int(alpha,beta,phi,s)
+          )/(alpha+beta);
+  return evalf( L / s^(1-beta) );
+end proc:
+
+# master objective dispatcher: evaluates L0(alpha,beta,phi;s) using the appropriate boundary/interior formula
+
+Lval := proc(alpha,beta,phi,s)
+  local a,b,pp,ss;
+  a := Snap01(alpha);
+  b := Snap01(beta);
+  pp := evalf(phi);
+  ss := evalf(s);
+
+  if ss <= 0 then
+    return 0.0;
+  end if;
+
+  # --- corners first ---
+  if a=0.0 and b=0.0 then
+    return evalf(L00(ss,pp));
+  end if;
+
+  # --- priority edges that have removable singularities ---
+  # beta=1 branch must be tested before alpha=0 so the corner (0,1) uses the beta=1 limit
+  if b=1.0 then
+    return evalf(L_beta1_obj(ss,a,pp));
+  end if;
+
+  # alpha=1 branch is tested before beta=0 so the corner (1,0) uses the alpha=1 limit
+  if a=1.0 then
+    return evalf(L_alpha1_obj(ss,b,pp));
+  end if;
+
+  # --- remaining edges ---
+  if b=0.0 then
+    return evalf(L_beta0(ss,a,pp));
+  end if;
+
+  if a=0.0 then
+    return evalf(L_alpha0(ss,b,pp));
+  end if;
+
+  # --- interior ---
+  return evalf(L0_interior(a,b,pp,ss));
+end proc:
+
+
+############################################################
+# DERIVATIVES w.r.t. s  (EXACT)
+############################################################
+
+# (0,0) derivative computed ONCE from L00_expr
+dL00ds_expr := diff(L00_expr, s):
+dL00ds := unapply(dL00ds_expr, s, phi):
+
+# ---- EDGE/BOUNDARY s-derivatives (exact closed forms, precomputed) ----
+L_beta0_expr_diff_s = (1/4*(cos(phi)*(alpha*s-4)*exp(3*s)+(-alpha*s+2)*exp(4*s)
++exp(2*s)*alpha*s-2+(-alpha*s+4)*exp(s)*cos(phi))*Pi*(exp(2*s)+1-2*exp(s)*cos(
+phi))^(1/4*alpha)-1/2*sin(Pi*alpha)*(exp(s)-1)^alpha*((s*alpha*cos(phi)-1/2*s*
+alpha-cos(phi))*exp(3*s)+(1/2-1/2*s*alpha)*exp(4*s)+s*alpha*(-1/2+cos(phi))*exp
+(2*s)-1/2*s*alpha*exp(s)+exp(s)*cos(phi)-1/2)*ln(exp(2*s)+1-2*exp(s)*cos(phi))+\
+Pi*((-1/4*exp(4*s)+1/4)*2^(1+alpha)+2^alpha*cos(phi)*(exp(3*s)-exp(s)))*sin(1/2
+*phi)^alpha+1/2*(s^(1+alpha)*alpha^2+2*s^alpha*(alpha-1))*sin(Pi*alpha)*(exp(3*
+s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*ln(sin(1/2*phi))+sin(Pi*alpha)*((
+(s*alpha*cos(phi)-1/2*s*alpha-cos(phi))*exp(3*s)+(1/2-1/2*s*alpha)*exp(4*s)+s*
+alpha*(-1/2+cos(phi))*exp(2*s)-1/2*s*alpha*exp(s)+exp(s)*cos(phi)-1/2)*ln(1+exp
+(s))+1/2*s*(cos(phi)+1)*(exp(3*s)+exp(s)-2*exp(2*s)))*(exp(s)-1)^alpha-Pi*(((s*
+alpha*cos(phi)+1/2*s*alpha-cos(phi))*exp(3*s)+(1/2-1/2*s*alpha)*exp(4*s)-s*(cos
+(phi)+1/2)*alpha*exp(2*s)+1/2*s*alpha*exp(s)+exp(s)*cos(phi)-1/2)*(1+exp(s))^
+alpha+(-1/4*exp(4*s)+1/4)*2^(1+alpha)+2^alpha*cos(phi)*(exp(3*s)-exp(s))))*(
+alpha-1)/s^2/sin(Pi*alpha)/(exp(2*s)-1)/Pi/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/
+alpha/(Pi-phi)^2/GAMMA(1+alpha):
+
+L_alpha0_expr_diff_s = 1/4*(2*(beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-exp(4*s)
++exp(2*s))*s^(1+beta)-2*s^beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+
+1/2)*(-1+beta))*Pi*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*beta)+2*(exp(s)-1)^(-
+beta)*sin(Pi*beta)*(beta*((-1/2+cos(phi))*exp(3*s)-1/2*exp(4*s)+(-1/2+cos(phi))
+*exp(2*s)-1/2*exp(s))*s^(1+beta)-s^beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*
+exp(4*s)+1/2)*(-1+beta))*ln(exp(2*s)+1-2*exp(s)*cos(phi))-((beta^2*cos(phi)*(
+exp(3*s)-exp(s))*s^(1+beta)+s^beta*(-1+beta)*(exp(4*s)-1))*2^(1-beta)-4*(1/4*
+beta^2*(exp(4*s)-1)*s^(1+beta)+s^beta*cos(phi)*(-1+beta)*(exp(3*s)-exp(s)))*2^(
+-beta))*Pi*sin(1/2*phi)^(-beta)-4*((beta*((-1/2+cos(phi))*exp(3*s)-1/2*exp(4*s)
++(-1/2+cos(phi))*exp(2*s)-1/2*exp(s))*ln(1+exp(s))-1/2*(cos(phi)+1)*(exp(3*s)+
+exp(s)-2*exp(2*s)))*s^(1+beta)-s^beta*ln(1+exp(s))*(exp(3*s)*cos(phi)-exp(s)*
+cos(phi)-1/2*exp(4*s)+1/2)*(-1+beta))*sin(Pi*beta)*(exp(s)-1)^(-beta)-4*(((cos(
+phi)+1/2)*exp(3*s)-1/2*exp(4*s)+(-cos(phi)-1/2)*exp(2*s)+1/2*exp(s))*beta*s^(1+
+beta)-s^beta*(exp(3*s)*cos(phi)-exp(s)*cos(phi)-1/2*exp(4*s)+1/2)*(-1+beta))*Pi
+*(1+exp(s))^(-beta)+(beta^2*cos(phi)*(exp(3*s)-exp(s))*s^(1+beta)+s^beta*(-1+
+beta)*(exp(4*s)-1))*Pi*2^(1-beta)-4*sin(Pi*beta)*(exp(3*s)*cos(phi)-exp(s)*cos(
+phi)-1/2*exp(4*s)+1/2)*ln(sin(1/2*phi))-4*(1/4*beta^2*(exp(4*s)-1)*s^(1+beta)+s
+^beta*cos(phi)*(-1+beta)*(exp(3*s)-exp(s)))*2^(-beta)*Pi)/s^2/sin(Pi*beta)/(exp
+(2*s)-1)/Pi/(exp(s)*cos(phi)-1/2*exp(2*s)-1/2)/beta/(Pi-phi)^2/GAMMA(1-beta):
+
+L_alpha1_expr_diff_s = -((((-1+beta)*(s-1)*exp(2*s)+s*(1+beta)*exp(s)+beta-1)*(
+s/(exp(s)-1))^beta+2*(sin(1/2*phi)-1)*(exp(s)-1))*(exp(2*s)+1-2*exp(s)*cos(phi)
+)^(1/2)-(s/(exp(s)-1))^beta*((((-2*s+2)*beta+s-2)*cos(phi)+s+beta-1)*exp(2*s)+(
+-1+beta)*(s-1)*exp(3*s)+((-s-2*beta+2)*cos(phi)+1+(s-1)*beta)*exp(s)+beta-1))/(
+exp(2*s)+1-2*exp(s)*cos(phi))^(1/2)/(1+beta)/(exp(s)-1)/s^2/Pi/(Pi-phi)^2/GAMMA
+(1-beta):
+
+L_beta1_expr_diff_s = -(alpha-1)*((sin(1/2*phi)*s^alpha*((alpha-1)*exp(4*s)+(((-\
+2*alpha-2)*cos(phi)+alpha-1))*exp(2*s)+(((-2*alpha+2)*cos(phi)+1+alpha))*exp(3*s)+
+exp(s)*(1+alpha))*(1/s*(exp(s)-1))^alpha+(1/2*s^alpha*alpha^2+s^(alpha-1)*alpha
+-1/2*s^alpha)*((-1/2+cos(phi))*exp(4*s)-exp(s)*cos(phi)-cos(phi)*exp(2*s)+cos(
+phi)*exp(3*s)-1/2*exp(5*s)+1/2*exp(s)+1/2)*(sin(1/2*phi)-1))*(exp(2*s)+1-2*exp(
+s)*cos(phi))^(1/2)+2*((cos(phi)-1)*(alpha-1/2)*exp(4*s)+(cos(phi)-1)*(alpha+1/2
+)*exp(2*s)+((2*alpha-1/2)*cos(phi)-alpha-1/2)*exp(3*s)+(-1/2*alpha+1/2)*exp(5*s
+)-1/2*exp(s)*(alpha-cos(phi)))*sin(1/2*phi)*s^alpha*(1/s*(exp(s)-1))^alpha)/(
+exp(2*s)+1-2*exp(s)*cos(phi))^(3/2)/Pi/(Pi-phi)^2/(exp(s)-1)/(1+exp(s))^2/sin(1
+/2*phi)/GAMMA(alpha+2):
+
+dL_beta0  := unapply(L_beta0_expr_diff_s,  s, alpha, phi):
+dL_alpha0 := unapply(L_alpha0_expr_diff_s, s, beta,  phi):
+dL_alpha1 := unapply(L_alpha1_expr_diff_s, s, beta,  phi):
+dL_beta1  := unapply(L_beta1_expr_diff_s,  s, alpha, phi):
+
+# INTERIOR s-derivative for L0 (exact closed form, precomputed)
+dL0_interior_expr :=
+(-1+alpha)*(s^(-1+beta+alpha)*(-1+beta+alpha)/s*sin(Pi*alpha)*((exp(s)-1)/s)^
+alpha*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*beta)+s^(-1+beta+alpha)*sin(Pi*alpha
+)*((exp(s)-1)/s)^alpha*alpha*(exp(s)/s-(exp(s)-1)/s^2)/(exp(s)-1)*s*(exp(2*s)+1
+-2*exp(s)*cos(phi))^(-1/2*beta)-1/2*s^(-1+beta+alpha)*sin(Pi*alpha)*((exp(s)-1)
+/s)^alpha*(exp(2*s)+1-2*exp(s)*cos(phi))^(-1/2*beta)*beta*(2*exp(2*s)-2*exp(s)*
+cos(phi))/(exp(2*s)+1-2*exp(s)*cos(phi))-s^(-1+beta+alpha)*(-1+beta+alpha)/s*
+sin(Pi*alpha)*((exp(s)-1)/s)^alpha*(1+exp(s))^(-beta)-s^(-1+beta+alpha)*sin(Pi*
+alpha)*((exp(s)-1)/s)^alpha*alpha*(exp(s)/s-(exp(s)-1)/s^2)/(exp(s)-1)*s*(1+exp
+(s))^(-beta)+s^(-1+beta+alpha)*sin(Pi*alpha)*((exp(s)-1)/s)^alpha*(1+exp(s))^(-
+beta)*beta*exp(s)/(1+exp(s))+(1/2*(exp(2*s)+1-2*exp(s)*cos(phi))^(1/2*alpha)*
+alpha*(2*exp(2*s)-2*exp(s)*cos(phi))/(exp(2*s)+1-2*exp(s)*cos(phi))-(1+exp(s))^
+alpha*alpha*exp(s)/(1+exp(s)))*(alpha+beta)*sin(Pi*beta)*s^(-beta)*(s/(exp(s)-1
+))^beta-((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2*alpha)-(1+exp(s))^alpha)*(alpha+
+beta)*sin(Pi*beta)*s^(-beta)*beta/s*(s/(exp(s)-1))^beta+((exp(2*s)+1-2*exp(s)*
+cos(phi))^(1/2*alpha)-(1+exp(s))^alpha)*(alpha+beta)*sin(Pi*beta)*s^(-beta)*(s/
+(exp(s)-1))^beta*beta*(1/(exp(s)-1)-s/(exp(s)-1)^2*exp(s))/s*(exp(s)-1)-1/2*(2^
+(1-beta)*s^(-1+beta+alpha)*(-1+beta+alpha)/s-s^(alpha+beta)*(alpha+beta)/s*2^(-
+beta)*(-alpha+beta))*sin(Pi*alpha)*sin(1/2*phi)^(-beta)+1/2*2^(1-beta)*s^(-1+
+beta+alpha)*(-1+beta+alpha)/s*sin(Pi*alpha)+1/2*sin(Pi*beta)*2^alpha*(-alpha+
+beta)*(alpha+beta)*(sin(1/2*phi)^alpha-1)*s^(1-beta)*(1-beta)/s+1/2*s^(-beta)*
+beta/s*2^(1+alpha)*sin(Pi*beta)*(alpha+beta)*sin(1/2*phi)^alpha-1/2*s^(-beta)*
+beta/s*2^(1+alpha)*sin(Pi*beta)*(alpha+beta)-1/2*s^(alpha+beta)*(alpha+beta)/s*
+sin(Pi*alpha)*2^(-beta)*(-alpha+beta))/(alpha+beta)/(Pi-phi)^2/sin(Pi*alpha)/
+sin(Pi*beta)/GAMMA(1-beta)/GAMMA(1+alpha):
+
+dL0_interior := unapply(dL0_interior_expr, s, alpha, beta, phi):
+
+# master s-derivative dispatcher: evaluates d/ds L0(alpha,beta,phi;s) with matching boundary/interior formulas
+dLds := proc(s, alpha, beta, phi)
+  local a,b;
+  a := Snap01(alpha);
+  b := Snap01(beta);
+
+  if a=0.0 and b=0.0 then
+    return evalf(dL00ds(s,phi));
+  end if;
+
+  if b=1.0 then
+    return evalf(dL_beta1(s,a,phi));
+  end if;
+
+  if a=1.0 then
+    return evalf(dL_alpha1(s,b,phi));
+  end if;
+
+  if b=0.0 then
+    return evalf(dL_beta0(s,a,phi));
+  end if;
+
+  if a=0.0 then
+    return evalf(dL_alpha0(s,b,phi));
+  end if;
+
+  return evalf(dL0_interior(s,a,b,phi));
+end proc:
+
+
+############################################################
+# ROOT BRACKETING + FSOLVE ON s in [sLo,1]
+############################################################
+
+LogGrid := proc(sL,sR,M)
+  local i, a,b;
+  a := evalf(ln(sL)); b := evalf(ln(sR));
+  if M<=1 then return [evalf(sL)]; fi;
+  [seq( evalf(exp(a + (b-a)*i/(M-1))), i=0..M-1 )];
+end proc:
+
+Dedup := proc(rootList::list, tol::numeric)
+  local L, i, out;
+
+  if nops(rootList)=0 then
+    return [];
+  end if;
+
+  L := sort(rootList);
+
+  out := [L[1]];
+  for i from 2 to nops(L) do
+    if abs(L[i] - out[-1]) > tol then
+      out := [op(out), L[i]];
+    end if;
+  od;
+
+  return out;
+end proc:
+
+
+############################################################
+# 1D MINIMIZATION IN s
+#
+# For fixed (alpha,beta,phi), the minimum over s in (0,1] is found by:
+#   - evaluating at s=1, and
+#   - evaluating at interior critical points where d/ds L0 = 0.
+# Critical points are located by bracketing sign changes of d/ds L0 on a log-spaced
+# grid in s, then refining each bracket with fsolve.
+############################################################
+
+MinOverS_fsolve := proc(alpha,beta,phi)
+  local Sgrid, i, a,b, g1,g2, sol, roots, r, bestv, bests, v, f;
+
+  roots := []:
+  Sgrid := LogGrid(sLo, 1.0, NsBracket);
+
+  f := ss -> dLds(ss, alpha, beta, phi);
+
+  for i from 1 to nops(Sgrid)-1 do
+    a := Sgrid[i]; b := Sgrid[i+1];
+
+    g1 := f(a); g2 := f(b);
+
+    if not(type(g1,realcons) and type(g2,realcons)) then
+      next;
+    fi;
+
+    if g1*g2 <= 0 then
+      sol := fsolve(f, a..b);
+      if sol <> NULL and type(sol,numeric) then
+        sol := evalf(sol);
+        if sol > sLo and sol < 1.0 then
+          roots := [op(roots), sol];
+        fi;
+      fi;
+    fi;
+  od;
+
+  roots := Dedup(roots, rootTol);
+
+  bestv := Lval(alpha,beta,phi, 1.0);
+  bests := 1.0;
+
+  for r in roots do
+    v := Lval(alpha,beta,phi, r);
+    if type(v,realcons) and type(bestv,realcons) and v < bestv then
+      bestv := v; bests := r;
+    fi;
+  od;
+
+  return [bestv, bests, roots];
+end proc:
+
+############################################################
+# KEEP TOP-K BEST RECORDS: [val,a,b,phi,s]
+############################################################
+InsertBest := proc(bestList, rec, K)
+  local L;
+  L := [op(bestList), rec];
+  L := sort(L, (x,y)->evalb(x[1] < y[1]));
+  if nops(L) > K then
+    return [op(1..K, L)];
+  else
+    return L;
+  fi;
+end proc:
+
+
+############################################################
+# 3D GRID SEARCH OVER (alpha,beta,phi)
+#
+# For each grid triple, call MinOverS_fsolve(...) to minimize in s.
+# The smallest values encountered are stored as records [value, alpha, beta, phi, s*].
+############################################################
+
+GridSearch3D_m0 := proc(Kkeep::posint, Kprint::posint)
+  local a,b,phi, res, val, sstar,
+        bestList, best,
+        cnt, tot, t0, t1, lastCnt,
+        instRate, eta,
+        aG, bG, pG, i;
+
+  bestList := []:
+  best := +infinity:
+
+  aG := ListTools:-Reverse(alphaGrid):
+  bG := ListTools:-Reverse(betaGrid):
+  pG := ListTools:-Reverse(phiGrid):
+
+  tot := nops(aG)*nops(bG)*nops(pG):
+  cnt := 0:
+  t0 := time[real]():
+  t1 := t0:
+  lastCnt := 0:
+
+  printf("START m0  tot=%d  start(a,b,phi)=(%.10f,%.10f,%.10f)\n",
+         tot, aG[1], bG[1], pG[1]);
+
+  for a in aG do
+    for b in bG do
+      for phi in pG do
+
+        cnt := cnt + 1;
+
+        res := MinOverS_fsolve(a,b,phi);   # returns [val, s*]
+        val := res[1];  sstar := res[2];
+
+        if type(val, realcons) then
+          bestList := InsertBest(bestList, [val,a,b,phi,sstar], Kkeep);
+
+          if val < best then
+            best := val;
+            printf("NEW BEST: %.10g at (a,b,phi,s)=(%.10f,%.10f,%.10f,%.10f)  [%d/%d]\n",
+                   best, evalf(a), evalf(b), evalf(phi), evalf(sstar), cnt, tot);
+          fi;
+        fi;
+
+        if cnt mod Kprint = 0 then
+          if cnt > lastCnt then
+            instRate := (cnt-lastCnt)/(time[real]()-t1);
+            if instRate > 0 then
+              eta := (tot-cnt)/instRate;
+              if best = +infinity then
+                printf("Progress: %d/%d  best=+inf  rate=%.3f  ETA=%.0f\n",
+                       cnt, tot, instRate, eta);
+              else
+                printf("Progress: %d/%d  best=%.10g  rate=%.3f  ETA=%.0f\n",
+                       cnt, tot, best, instRate, eta);
+              fi;
+            else
+              if best = +infinity then
+                printf("Progress: %d/%d  best=+inf\n", cnt, tot);
+              else
+                printf("Progress: %d/%d  best=%.10g\n", cnt, tot, best);
+              fi;
+            fi;
+            t1 := time[real]():
+            lastCnt := cnt:
+          fi;
+        fi;
+
+      od;
+    od;
+  od;
+
+  printf("DONE m0.\n\n");
+  printf("Top-%d candidates:\n", Kkeep);
+  for i from 1 to nops(bestList) do
+    printf("  %d: val=%g at (a,b,phi,s)=(%.10f,%.10f,%.10f,%.10f)\n",
+           i, bestList[i][1], bestList[i][2], bestList[i][3], bestList[i][4], bestList[i][5]);
+  od;
+
+  return bestList;
+end proc:
+
+# Run the grid search (may take time, depending on N and NsBracket):
+cand := GridSearch3D_m0(Kkeep, Kprint):
+
+
+
+######################### OPTIONAL: use Optimization[Minimize] as a cross-check (much slower)
+
+
+L0:=(1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+
+alpha)/GAMMA(1-beta)*((s/(exp(s)-1))^beta*((1+exp(s))^alpha-((exp(2*s)+1-2*exp(
+s)*cos(phi))^(1/2))^alpha)/(2^alpha-(2*sin(1/2*phi))^alpha)-1-1/2*(alpha-beta)*
+s)/s/(alpha+beta)-(1-alpha)*((2*sin(1/2*phi))^(-beta)-2^(-beta))/(Pi-phi)^2/sin
+(Pi*beta)/GAMMA(1-beta)*s^(alpha+beta)/GAMMA(1+alpha)*((1/s*(exp(s)-1))^alpha*(
+((exp(2*s)+1-2*exp(s)*cos(phi))^(1/2))^(-beta)-(1+exp(s))^(-beta))/((2*sin(1/2*
+phi))^(-beta)-2^(-beta))-1-1/2*(alpha-beta)*s)/s/(alpha+beta);
+
+# Split into two alpha ranges to reduce the chance of converging to a non-global local minimum.
+
+Digits:=200:
+with(Optimization):
+
+Minimize(L0, alpha=10^(-20)....0.5, beta=10^(-20)....1-10^(-20),
+s=10^(-20)....1,
+phi=0.061...Pi-10^(-20),initialpoint = [alpha=0.25, 
+beta=0.25, phi=1.5, s=0.5]):evalf(%,10);
+
+Minimize(L0, alpha=0.5....1-10^(-20), 
+beta=10^(-20)....1-10^(-20),
+s=10^(-20)....1,
+phi=0.061...Pi-10^(-20),initialpoint = [alpha=0.75, 
+beta=0.25, phi=1.5, s=0.5]):evalf(%,10);

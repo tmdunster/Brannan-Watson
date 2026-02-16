@@ -1,0 +1,755 @@
+restart:
+Digits := 80:
+
+###########################################################
+#  F1F2.txt — Infimum search for F_1 and F_2 (paper: Prop. F1F2)
+#
+#  This script supports Proposition for the inf{F} of the paper.
+#  With phi0=0.061 and n0=5 (so ln(2*n0)=ln(10)), it computes numerical
+#  lower bounds for the infima
+#
+#    inf_{alpha,beta in (0,1), alpha>=beta, phi in [phi0,pi)} F1(alpha,beta,phi),
+#    inf_{alpha,beta in (0,1), alpha< beta, phi in [phi0,pi)} F2(alpha,beta,phi).
+#
+#  Numerical strategy:
+#    • Build a 2D grid in (alpha,beta) on [0,1]^2, biased toward 0 and 1.
+#    • For each (alpha,beta), minimize over phi in [phi0,pi) by checking:
+#         (i)   phi = phi0,
+#         (ii)  interior critical points where d/dphi F_j = 0,
+#         (iii) the removable limit phi -> pi^-.
+#      Interior critical points are located by scanning for sign-changes in the
+#      derivative and then applying bisection.
+#    • On boundary faces alpha=0,1 or beta=0,1 (and for nu=alpha+beta≈0),
+#      use explicit limiting formulas to avoid removable singularities.
+#
+#  Output:
+#    Prints running best values and lists the top-K candidate points found.
+###########################################################
+
+# ---------------- parameters ----------------
+phi0   := 0.061:
+uMin   := 1e-8:
+phiMax := evalf(Pi - uMin):     # search critical points in (phi0,phiMax)
+
+n0 := 5:                        # fixed n (ln(2*n0)=ln(10))
+
+edgeTol    := 1e-30:            # snap alpha,beta to 0 or 1 if within edgeTol
+phiEdgeTol := 1e-30:            # snap phi to Pi if within phiEdgeTol
+nuTol      := 1e-30:            # treat nu=alpha+beta as 0 if < nuTol
+
+Ngrid := 31:
+pBias := 3:
+
+ScanM   := 200:                 # scan intervals for sign-change root bracketing
+gTol    := 1e-12:
+tolRoot := 1e-12:
+
+Kkeep := 10:
+Kprint := 200:
+
+# ---------------- helpers ----------------
+Snap01 := proc(x, eps)
+  if abs(x) < eps then return 0;
+  elif abs(1-x) < eps then return 1;
+  else return x;
+  fi;
+end proc:
+
+Dedup := proc(L, tol)
+  local S, out, x;
+  if nops(L)=0 then return []; fi;
+  S := sort(L);
+  out := [S[1]];
+  for x in S[2..-1] do
+    if abs(x - out[-1]) > tol then out := [op(out), x]; fi;
+  od;
+  return out;
+end proc:
+
+InsertBest := proc(bestList, item, K)
+  local L;
+  L := [op(bestList), item];
+  L := sort(L, (x,y) -> x[1] < y[1]);
+  if nops(L) > K then L := L[1..K]; fi;
+  return L;
+end proc:
+
+Grid01_Biased := proc(N::posint, p::posint)
+  local k, L0, L1, S;
+  L0 := [seq( (k/(N-1))^p, k=0..N-1 )];
+  L1 := [seq( 1 - (k/(N-1))^p, k=0..N-1 )];
+  S := {op(L0), op(L1)};
+  return sort(convert(S, list));
+end proc:
+
+# SafeReal(expr,tol): evaluate numerically and enforce a real output.
+# Returns a real number, or FAIL if evaluation fails / is genuinely complex.
+SafeReal := proc(expr, tol)
+  local y;
+  try
+    y := evalf(expr);
+  catch:
+    return FAIL;
+  end try;
+
+  if not type(y, numeric) then return FAIL; fi;
+
+  if type(y, complexcons) then
+    if abs(Im(y)) < tol then y := Re(y); else return FAIL; fi;
+  fi;
+
+  return y;
+end proc:
+
+# BisectRoot(F,a,b,tol): bisection root finder on an interval with a sign change.
+# Uses SafeReal to guard against spurious complex values.
+BisectRoot := proc(F, a0, b0, tol)
+  local a,b,fa,fb,m,fm,it;
+  a := a0: b := b0:
+
+  fa := SafeReal(F(a), 1e-25):
+  fb := SafeReal(F(b), 1e-25):
+  if fa=FAIL or fb=FAIL then return FAIL; fi;
+  if fa*fb > 0 then return FAIL; fi;
+
+  it := 0;
+  while (b-a) > tol and it < 250 do
+    m  := (a+b)/2;
+    fm := SafeReal(F(m), 1e-25);
+    if fm=FAIL then return FAIL; fi;
+    if fa*fm <= 0 then b := m: fb := fm; else a := m: fa := fm; fi;
+    it := it+1;
+  od;
+
+  return (a+b)/2;
+end proc:
+
+# shorthand functions of phi (phi in (0,Pi) so sin(phi/2)>0):
+#   u  = Pi - phi
+#   s  = sin(phi/2)
+#   co = cos(phi/2)
+#   ls = ln(sin(phi/2))
+u_of  := ph -> evalf(Pi - ph):
+s_of  := ph -> evalf(sin(ph/2)):
+co_of := ph -> evalf(cos(ph/2)):
+ls_of := ph -> evalf(ln(sin(ph/2))):
+
+###########################################################
+# nu->0+ common limit (use for (0,0) and nu extremely small)
+###########################################################
+Fnu0expr :=
+-ln(sin(phi/2))*( 2*(1+gamma+ln(10)) + ln(sin(phi/2)) )/(2*Pi*(Pi-phi)^2):
+
+dFnu0expr := diff(Fnu0expr, phi):
+
+Fnu0  := unapply(Fnu0expr, phi):
+dFnu0 := unapply(dFnu0expr, phi):
+
+# phi -> Pi limit of Fnu0 (uses ln(sin(phi/2)) ~ -(Pi-phi)^2/8)
+Fnu0Pi := evalf( (1+gamma+ln(10))/(8*Pi) ):
+
+###########################################################
+# ---------------- EDGE FORMULAS --------------------------
+# alpha=0/1, beta=1
+# beta=0 is defined by continuity.
+###########################################################
+
+# ---------- F1 on alpha=1 edge ----------
+F1_a1 := proc(b, ph)
+  local u,s;
+  u := u_of(ph): s := s_of(ph);
+  return evalf( (2 - 2*s)/(Pi*u^2)/(1+b) );
+end proc:
+
+dF1_a1 := proc(b, ph)
+  local u,s,co;
+  u := u_of(ph): s := s_of(ph): co := co_of(ph);
+  return evalf( ((-Pi+ph)*co - 4*s + 4)/(Pi*u^3)/(1+b) );
+end proc:
+
+# ---------- F1 on alpha=0 edge ----------
+# Simplified form  F1(0,b,phi) = [(b-1)10^{-b}Gamma(b)(s^{-b}-1) - ln(s)]/(Pi*u^2*b)
+F1_a0 := proc(b, ph)
+  local u,s,ls;
+  u := u_of(ph): s := s_of(ph): ls := ls_of(ph);
+
+  if abs(b) < nuTol then return evalf(Fnu0(ph)); fi;
+
+  return evalf( (b-1)*10^(-b)*GAMMA(b)*(s^(-b)-1)/(Pi*u^2*b) - ls/(Pi*u^2*b) );
+end proc:
+
+# d/dphi on alpha=0 edge (simplified derivative)
+dF1_a0 := proc(b, ph)
+  local u,s,co,ls;
+  u := u_of(ph): s := s_of(ph): co := co_of(ph): ls := ls_of(ph);
+
+  if abs(b) < nuTol then return evalf(dFnu0(ph)); fi;
+
+  return evalf(
+    ( -b*(b-1)*10^(-b)*GAMMA(b)*co*u*s^(-b)
+      - (4*ls*s + co*u)
+      + 4*(b-1)*10^(-b)*GAMMA(b)*(s^(1-b) - s)
+    )/(2*s*u^3*Pi*b)
+  );
+end proc:
+
+# ---------- F1 on beta=1 edge ----------
+F1_b1 := unapply(
+  (-1+alpha)*((1/10*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(Pi*alpha)-Pi*2^alpha*(1+alpha))*sin(1/2*phi)
+  -1/10*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(Pi*alpha)+Pi*2^alpha*(1+alpha)*sin(1/2*phi)^(1+alpha))
+  /Pi/sin(1/2*phi)/(Pi-phi)^2/(1+alpha)/sin(Pi*alpha)/GAMMA(2+alpha),
+  alpha, phi
+):
+
+dF1_b1 := unapply(
+  2*(-1+alpha)*(1/4*Pi*cos(1/2*phi)*2^alpha*alpha*(1+alpha)*(Pi-phi)*sin(1/2*phi)^(1+alpha)
+  +(-1/10*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(Pi*alpha)+Pi*2^alpha*(1+alpha))*cos(1/2*phi)^2
+  +1/40*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(Pi*alpha)*(Pi-phi)*cos(1/2*phi)
+  -1/10*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(1/2*phi)*sin(Pi*alpha)
+  +1/10*alpha*5^(-alpha)*GAMMA(2+alpha)*sin(Pi*alpha)
+  +Pi*2^alpha*(1+alpha)*(sin(1/2*phi)^(2+alpha)-1))
+  /Pi/sin(1/2*phi)^2/(Pi-phi)^3/(1+alpha)/sin(Pi*alpha)/GAMMA(2+alpha),
+  alpha, phi
+):
+
+# ---------- F1 on beta=0 edge ----------
+# Continuous extension of the tex definition:
+#   F1(a,0,phi) = A1(a,phi)/a + (1-a)^2*5^{-a}*ln(sin(phi/2))/(Pi*(Pi-phi)^2*a)
+F1_b0 := proc(a, ph)
+  local u,s,ls,termA1,termLog;
+  u := u_of(ph): s := s_of(ph): ls := ls_of(ph);
+
+  if abs(a) < nuTol then return evalf(Fnu0(ph)); fi;
+  # NOTE: a=1 handled upstream by alpha=1 edge
+  termA1  := 2^a*(a-1)*(s^a-1)/(a*u^2*sin(Pi*a)*GAMMA(1+a));
+  termLog := (a-1)^2*5^(-a)*ls/(u^2*Pi*a);
+
+  return evalf(termA1 + termLog);
+end proc:
+
+dF1_b0 := proc(a, ph)
+  local u,s,co,ls,K1,K2,termA1p,termLogp;
+  u := u_of(ph): s := s_of(ph): co := co_of(ph): ls := ls_of(ph);
+
+  if abs(a) < nuTol then return evalf(dFnu0(ph)); fi;
+  # NOTE: a=1 handled upstream by alpha=1 edge
+
+  # constants in phi
+  K1 := 2^a*(a-1)/(a*sin(Pi*a)*GAMMA(1+a));
+  K2 := (a-1)^2*5^(-a)/(Pi*a);
+
+  # d/dphi of (s^a-1)/u^2
+  termA1p := K1*( a*co*s^(a-1)/(2*u^2) + 2*(s^a-1)/u^3 );
+
+  # d/dphi of ln(s)/u^2
+  termLogp := K2*( co/(2*s*u^2) + 2*ls/u^3 );
+
+  return evalf(termA1p + termLogp);
+end proc:
+
+# ---------- F2 on alpha=1 edge (same as F1) ----------
+F2_a1 := proc(b, ph) return evalf(F1_a1(b, ph)); end proc:
+dF2_a1 := proc(b, ph) return evalf(dF1_a1(b, ph)); end proc:
+
+# ---------- F2 on alpha=0 edge ----------
+F2_a0 := proc(b, ph)
+  local u,s,ls;
+  u := u_of(ph): s := s_of(ph): ls := ls_of(ph);
+
+  if abs(b) < nuTol then return evalf(Fnu0(ph)); fi;
+
+  return evalf(
+    -(s^(-b)-1)*GAMMA(b)*( abs(b-1)*10^(-b) + b^2*10^(-1-b) )/(Pi*u^2*b)
+    - ls/(Pi*u^2*b)
+  );
+end proc:
+
+dF2_a0 := proc(b, ph)
+  local u,s,co,ls;
+  u := u_of(ph): s := s_of(ph): co := co_of(ph): ls := ls_of(ph);
+
+  if abs(b) < nuTol then return evalf(dFnu0(ph)); fi;
+
+  return evalf(
+    ( 5*b*GAMMA(b)*co*u*(10^(-1-b)*b^2 + abs(b-1)*10^(-b))*s^(-b)
+      - 5*(4*ls*s + co*u)
+      - 2*(b^2 + 10*abs(b-1))*10^(-b)*GAMMA(b)*(s^(1-b) - s)
+    )/(10*s*u^3*Pi*b)
+  );
+end proc:
+
+# ---------- F2 on beta=1 edge ----------
+F2_b1 := unapply(
+  (-1+alpha)*(2^alpha*Pi*(1+alpha)*sin(1/2*phi)^(1+alpha)
+   +(-1/100*sin(Pi*alpha)*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*GAMMA(alpha+2)*5^(-alpha)-2^alpha*Pi*(1+alpha))*sin(1/2*phi)
+   +1/100*sin(Pi*alpha)*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*GAMMA(alpha+2)*5^(-alpha))
+  /(Pi-phi)^2/sin(Pi*alpha)/GAMMA(alpha+2)/sin(1/2*phi)/Pi/(1+alpha),
+  alpha, phi
+):
+
+dF2_b1 := unapply(
+  2*(-1+alpha)*(1/4*cos(1/2*phi)*Pi*2^alpha*alpha*(1+alpha)*(Pi-phi)*sin(1/2*phi)^(1+alpha)
+   +(1/100*sin(Pi*alpha)*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*GAMMA(alpha+2)*5^(-alpha)+2^alpha*Pi*(1+alpha))*cos(1/2*phi)^2
+   -1/400*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*5^(-alpha)*GAMMA(alpha+2)*(Pi-phi)*sin(Pi*alpha)*cos(1/2*phi)
+   +1/100*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*GAMMA(alpha+2)*sin(Pi*alpha)*5^(-alpha)*sin(1/2*phi)
+   -1/100*sin(Pi*alpha)*((1+alpha)^2*abs(-1+alpha)+10*abs(alpha))*GAMMA(alpha+2)*5^(-alpha)
+   +Pi*2^alpha*(sin(1/2*phi)^(alpha+2)-1)*(1+alpha))
+  /(1+alpha)/Pi/sin(1/2*phi)^2/(Pi-phi)^3/sin(Pi*alpha)/GAMMA(alpha+2),
+  alpha, phi
+):
+
+# ---------- F2 on beta=0 edge ----------
+# Continuous extension of the tex definition (includes the abs-weighted terms).
+F2_b0 := proc(a, ph)
+  local u,s,ls,termA1,Klog;
+  u := u_of(ph): s := s_of(ph): ls := ls_of(ph);
+
+  if abs(a) < nuTol then return evalf(Fnu0(ph)); fi;
+  # NOTE: a=1 handled upstream by alpha=1 edge
+
+  termA1 := 2^a*(a-1)*(s^a-1)/(a*u^2*sin(Pi*a)*GAMMA(1+a));
+
+  # all log-terms are constants in phi times ln(s)/u^2:
+  Klog :=
+     -(a-1)*abs(a-1)*5^(-a)/(Pi*a)
+     -(a-1)*5^(-1-a)*abs(1+a)*a/(2*Pi);
+
+  return evalf( termA1 + Klog*ls/u^2 );
+end proc:
+
+dF2_b0 := proc(a, ph)
+  local u,s,co,ls,K1,Klog,termA1p,termLogp;
+  u := u_of(ph): s := s_of(ph): co := co_of(ph): ls := ls_of(ph);
+
+  if abs(a) < nuTol then return evalf(dFnu0(ph)); fi;
+  # NOTE: a=1 handled upstream by alpha=1 edge
+
+  K1 := 2^a*(a-1)/(a*sin(Pi*a)*GAMMA(1+a));
+  Klog :=
+     -(a-1)*abs(a-1)*5^(-a)/(Pi*a)
+     -(a-1)*5^(-1-a)*abs(1+a)*a/(2*Pi);
+
+  termA1p  := K1*( a*co*s^(a-1)/(2*u^2) + 2*(s^a-1)/u^3 );
+  termLogp := Klog*( co/(2*s*u^2) + 2*ls/u^3 );
+
+  return evalf(termA1p + termLogp);
+end proc:
+
+###########################################################
+# --------- INTERIOR (away from edges): F1, F2 and d/dphi --
+###########################################################
+F1gen := unapply(
+  ((1-alpha)*(2^alpha-(2*sin(phi/2))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha)
+   - (1-alpha)*((2*sin(phi/2))^(-beta)-2^(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)
+     *(1-alpha-beta)*5^(-alpha-beta)
+  )/(alpha+beta),
+  alpha, beta, phi
+):
+
+F2gen := unapply(
+  ((1-alpha)*(2^alpha-(2*sin(phi/2))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha)
+   - (1-alpha)*((2*sin(phi/2))^(-beta)-2^(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)
+     *( abs(1-(alpha+beta))*5^(-(alpha+beta))
+        + (alpha+beta)^2*abs((alpha-beta)*(1+alpha)/(2*(alpha+beta)))*5^(-(alpha+beta)-1)
+      )
+  )/(alpha+beta),
+  alpha, beta, phi
+):
+
+# exact interior derivatives
+dF1gen := unapply(
+  1/2*(-1+alpha)*(-4*sin(Pi*alpha)*GAMMA(1+alpha)*2^(-beta)*5^(-alpha-beta)*(-1+alpha+beta)*sin(1/2*phi)^(1-beta)
+  +(beta*cos(1/2*phi)*(Pi-phi)*sin(1/2*phi)^(-beta)+4*sin(1/2*phi))*sin(Pi*alpha)*(-1+alpha+beta)*GAMMA(1+alpha)*2^(-beta)*5^(-alpha-beta)
+  +2^alpha*sin(Pi*beta)*GAMMA(1-beta)*(4*sin(1/2*phi)^(1+alpha)+alpha*cos(1/2*phi)*(Pi-phi)*sin(1/2*phi)^alpha-4*sin(1/2*phi)))
+  /sin(Pi*beta)/GAMMA(1-beta)/sin(1/2*phi)/(Pi-phi)^3/sin(Pi*alpha)/(alpha+beta)/GAMMA(1+alpha),
+  alpha, beta, phi
+):
+
+dF2gen := unapply(
+  -1/4*(GAMMA(1+alpha)*5^(-alpha-beta-1)*sin(Pi*alpha)*
+  (-4*2^(-beta)*(alpha+beta)^2*sin(1/2*phi)^(1-beta)
+   +beta*cos(1/2*phi)*(Pi-phi)*(2^(1-beta)*alpha*beta+2^(-beta)*(alpha^2+beta^2))*sin(1/2*phi)^(-beta)
+   +4*2^(-beta)*sin(1/2*phi)*(alpha+beta)^2)*abs((alpha-beta)*(1+alpha)/(alpha+beta))
+  -8*abs(-1+alpha+beta)*5^(-alpha-beta)*2^(-beta)*sin(1/2*phi)^(1-beta)*sin(Pi*alpha)*GAMMA(1+alpha)
+  +GAMMA(1+alpha)*abs(-1+alpha+beta)*sin(Pi*alpha)*(beta*2^(1-beta)*cos(1/2*phi)*(Pi-phi)*sin(1/2*phi)^(-beta)+8*sin(1/2*phi)*2^(-beta))*5^(-alpha-beta)
+  -2*2^alpha*sin(Pi*beta)*GAMMA(1-beta)*(4*sin(1/2*phi)^(1+alpha)+alpha*cos(1/2*phi)*(Pi-phi)*sin(1/2*phi)^alpha-4*sin(1/2*phi)))
+  *(-1+alpha)/sin(Pi*beta)/GAMMA(1-beta)/sin(1/2*phi)/(Pi-phi)^3/sin(Pi*alpha)/(alpha+beta)/GAMMA(1+alpha),
+  alpha, beta, phi
+):
+
+###########################################################
+# --------- Pi-limits (phi -> Pi^-) ------------------------
+###########################################################
+# Interior (alpha>0, beta>0) limits:
+#   A1(alpha,Pi) = 2^alpha*GAMMA(2-alpha)/(8*Pi)
+#   A2(alpha,beta,Pi) = (1-alpha)*2^{-beta}*GAMMA(1+beta)/(8*Pi)
+A1Pi := a -> evalf( 2^a*GAMMA(2-a)/(8*Pi) ):
+A2Pi := (a,b) -> evalf( (1-a)*2^(-b)*GAMMA(1+b)/(8*Pi) ):
+
+# beta=0 Pi-limit for F1 (0<a<1)
+F1Pi_b0 := proc(a)
+  if abs(a) < nuTol then return Fnu0Pi; fi;
+  return evalf(
+    2^a*(1-a)/(8*sin(Pi*a)*GAMMA(1+a))   # from termA1
+    - (a-1)^2*5^(-a)/(8*Pi*a)           # from log term
+  );
+end proc:
+
+# alpha=0 Pi-limit for F1 (0<b<1)
+F1Pi_a0 := proc(b)
+  if abs(b) < nuTol then return Fnu0Pi; fi;
+  return evalf( (1 + b*(b-1)*10^(-b)*GAMMA(b))/(8*Pi*b) );
+end proc:
+
+# beta=0 Pi-limit for F2 (0<a<1)
+F2Pi_b0 := proc(a)
+  if abs(a) < nuTol then return Fnu0Pi; fi;
+  return evalf(
+    2^a*(1-a)/(8*sin(Pi*a)*GAMMA(1+a))
+    - (a-1)^2*5^(-a)/(8*Pi*a)
+    - (1-a)*(1+a)*a*5^(-1-a)/(16*Pi)
+  );
+end proc:
+
+# alpha=0 Pi-limit for F2 (0<b<1)
+F2Pi_a0 := proc(b)
+  if abs(b) < nuTol then return Fnu0Pi; fi;
+  return evalf( (1 - b*(1-b)*10^(-b)*GAMMA(b) - b^3*10^(-1-b)*GAMMA(b))/(8*Pi*b) );
+end proc:
+
+F1Pi_int := proc(a,b)
+  local nu, fac;
+  nu := a+b;
+  fac := (1-nu)*5^(-nu);
+  return evalf( (A1Pi(a) - A2Pi(a,b)*fac)/nu );
+end proc:
+
+F2Pi_int := proc(a,b)
+  local nu, c2, fac;
+  nu := a+b;
+  c2 := (a-b)*(1+a)/(2*nu);
+  fac := abs(1-nu)*5^(-nu) + nu^2*abs(c2)*5^(-nu-1);
+  return evalf( (A1Pi(a) - A2Pi(a,b)*fac)/nu );
+end proc:
+
+F1Pi_val := proc(a0,b0)
+  local a,b,nu;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  nu := a+b;
+
+  if nu < nuTol then return Fnu0Pi; fi;
+
+  if a=0 then return F1Pi_a0(b); fi;
+  if a=1 then return evalf( 1/(4*Pi*(1+b)) ); fi;  # from alpha=1 edge
+  if b=0 then return F1Pi_b0(a); fi;
+  return F1Pi_int(a,b);
+end proc:
+
+F2Pi_val := proc(a0,b0)
+  local a,b,nu;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  nu := a+b;
+
+  if nu < nuTol then return Fnu0Pi; fi;
+
+  if a=0 then return F2Pi_a0(b); fi;
+  if a=1 then return evalf( 1/(4*Pi*(1+b)) ); fi;  # from alpha=1 edge
+  if b=0 then return F2Pi_b0(a); fi;
+  return F2Pi_int(a,b);
+end proc:
+
+###########################################################
+# --------- Safe evaluators F1/F2 and derivatives ----------
+# Priority:
+#   (1) phi=Pi (limit)
+#   (2) nu=0 limit
+#   (3) alpha=0, alpha=1, beta=0, beta=1
+#   (4) interior
+###########################################################
+F1_val := proc(a0,b0,ph0)
+  local a,b,nu,v,ph;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  ph := ph0;
+
+  if abs(Pi - ph) < phiEdgeTol then
+    return SafeReal(F1Pi_val(a,b), 1e-25);
+  fi;
+
+  nu := a+b;
+  if nu < nuTol then
+    return SafeReal(Fnu0(ph), 1e-25);
+  fi;
+
+  if a=0 then      v := F1_a0(b, ph);
+  elif a=1 then    v := F1_a1(b, ph);
+  elif b=0 then    v := F1_b0(a, ph);
+  elif b=1 then    v := F1_b1(a, ph);
+  else             v := F1gen(a,b,ph);
+  fi;
+
+  return SafeReal(v, 1e-25);
+end proc:
+
+dF1_val := proc(a0,b0,ph0)
+  local a,b,nu,v,ph;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  ph := ph0;
+
+  # d/dphi at phi=Pi is not used; return FAIL if asked
+  if abs(Pi - ph) < phiEdgeTol then return FAIL; fi;
+
+  nu := a+b;
+  if nu < nuTol then
+    return SafeReal(dFnu0(ph), 1e-25);
+  fi;
+
+  if a=0 then      v := dF1_a0(b, ph);
+  elif a=1 then    v := dF1_a1(b, ph);
+  elif b=0 then    v := dF1_b0(a, ph);
+  elif b=1 then    v := dF1_b1(a, ph);
+  else             v := dF1gen(a,b,ph);
+  fi;
+
+  return SafeReal(v, 1e-25);
+end proc:
+
+F2_val := proc(a0,b0,ph0)
+  local a,b,nu,v,ph;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  ph := ph0;
+
+  if abs(Pi - ph) < phiEdgeTol then
+    return SafeReal(F2Pi_val(a,b), 1e-25);
+  fi;
+
+  nu := a+b;
+  if nu < nuTol then
+    return SafeReal(Fnu0(ph), 1e-25);
+  fi;
+
+  if a=0 then      v := F2_a0(b, ph);
+  elif a=1 then    v := F2_a1(b, ph);
+  elif b=0 then    v := F2_b0(a, ph);
+  elif b=1 then    v := F2_b1(a, ph);
+  else             v := F2gen(a,b,ph);
+  fi;
+
+  return SafeReal(v, 1e-25);
+end proc:
+
+dF2_val := proc(a0,b0,ph0)
+  local a,b,nu,v,ph;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  ph := ph0;
+
+  if abs(Pi - ph) < phiEdgeTol then return FAIL; fi;
+
+  nu := a+b;
+  if nu < nuTol then
+    return SafeReal(dFnu0(ph), 1e-25);
+  fi;
+
+  if a=0 then      v := dF2_a0(b, ph);
+  elif a=1 then    v := dF2_a1(b, ph);
+  elif b=0 then    v := dF2_b0(a, ph);
+  elif b=1 then    v := dF2_b1(a, ph);
+  else             v := dF2gen(a,b,ph);
+  fi;
+
+  return SafeReal(v, 1e-25);
+end proc:
+
+###########################################################
+# --------- critical points in phi (scan + bisection) ------
+###########################################################
+# CritPhi_All(alpha,beta,which): locate interior critical points in phi.
+# We scan phi in [phi0,phiMax] for sign-changes of d/dphi F_j, then bisect.
+# which=1 uses F1, which=2 uses F2.
+CritPhi_All := proc(a0,b0, which::posint)
+  local roots, i, L,R, fL,fR, F, r;
+
+  roots := []:
+
+  if which=1 then
+    F := ph -> dF1_val(a0,b0,ph);
+  else
+    F := ph -> dF2_val(a0,b0,ph);
+  fi;
+
+  L  := phi0:
+  fL := SafeReal(F(L), 1e-25):
+
+  for i from 1 to ScanM do
+    R  := evalf(phi0 + (phiMax-phi0)*i/ScanM):
+    fR := SafeReal(F(R), 1e-25):
+
+    if fR<>FAIL and abs(fR) < gTol then
+      roots := [op(roots), R];
+    elif fL<>FAIL and fR<>FAIL and fL*fR < 0 then
+      r := BisectRoot(F, L, R, tolRoot);
+      if r <> FAIL then roots := [op(roots), r]; fi;
+    fi;
+
+    L := R: fL := fR:
+  od;
+
+  return Dedup(roots, 1e-9);
+end proc:
+
+###########################################################
+# --------- min over phi candidates for fixed (a,b) --------
+###########################################################
+# MinOverPhi(alpha,beta): minimize F1 or F2 over phi in [phi0,pi). 
+# Candidates checked: phi0, interior critical points, and the removable limit at pi.
+MinOverPhi := proc(a0,b0)
+  local a,b, which, roots, ph, best, bestphi, v;
+
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+
+  which := `if`(evalf(a) >= evalf(b), 1, 2);
+
+  roots := CritPhi_All(a,b,which);
+
+  best := 1e300: bestphi := NULL:
+
+  # phi = phi0
+  if which=1 then v := F1_val(a,b,phi0); else v := F2_val(a,b,phi0); fi;
+  if v<>FAIL and v < best then best := v: bestphi := phi0; fi;
+
+  # interior critical points
+  for ph in roots do
+    if which=1 then v := F1_val(a,b,ph); else v := F2_val(a,b,ph); fi;
+    if v<>FAIL and v < best then best := v: bestphi := ph; fi;
+  od;
+
+  # phi = Pi (limit)
+  if which=1 then v := F1Pi_val(a,b); else v := F2Pi_val(a,b); fi;
+  if v<>FAIL and v < best then best := v: bestphi := Pi; fi;
+
+  return [best, bestphi, which];
+end proc:
+
+###########################################################
+# ----------------- GRID SEARCH ---------------------------
+###########################################################
+# GridSearchAB(N,p): main 2D search over (alpha,beta).
+# N controls the number of biased grid points per axis; p controls endpoint bias.
+GridSearchAB := proc(N::posint, p::posint)
+  local Agrid,Bgrid, aG,bG, aa,bb, bestList1,bestList2,
+        bestVal1,bestVal2, bestA1,bestB1,bestPhi1, bestA2,bestB2,bestPhi2,
+        tot,cnt,t0, a,b,res,val,phiStar,which,i;
+
+  Agrid := Grid01_Biased(N,p):
+  Bgrid := Grid01_Biased(N,p):
+
+  aG := ListTools:-Reverse(Agrid):
+  bG := ListTools:-Reverse(Bgrid):
+
+  bestList1 := []: bestVal1 := 1e300: bestA1 := 0.: bestB1 := 0.: bestPhi1 := 0.:
+  bestList2 := []: bestVal2 := 1e300: bestA2 := 0.: bestB2 := 0.: bestPhi2 := 0.:
+
+  tot := nops(aG)*nops(bG):
+  cnt := 0:
+  t0 := time[real]():
+
+  printf("START tot=%d  N=%d  p=%d  phi in [%.10f,Pi]\n", tot, N, p, phi0);
+
+  for a in aG do
+    for b in bG do
+      cnt := cnt + 1;
+
+      aa := Snap01(a, edgeTol):
+      bb := Snap01(b, edgeTol):
+
+      res := MinOverPhi(aa,bb);
+      val := res[1];
+      phiStar := res[2];
+      which := res[3];
+
+      if type(val, realcons) then
+        if which=1 then
+          bestList1 := InsertBest(bestList1, [val, evalf(a), evalf(b), evalf(phiStar)], Kkeep);
+          if val < bestVal1 then
+            bestVal1 := val: bestA1 := evalf(a): bestB1 := evalf(b): bestPhi1 := evalf(phiStar):
+            printf("NEW BEST F1  val=%.12g  a=%.10f  b=%.10f  phi=%.10f\n",
+                   bestVal1, bestA1, bestB1, bestPhi1);
+          fi;
+        else
+          bestList2 := InsertBest(bestList2, [val, evalf(a), evalf(b), evalf(phiStar)], Kkeep);
+          if val < bestVal2 then
+            bestVal2 := val: bestA2 := evalf(a): bestB2 := evalf(b): bestPhi2 := evalf(phiStar):
+            printf("NEW BEST F2  val=%.12g  a=%.10f  b=%.10f  phi=%.10f\n",
+                   bestVal2, bestA2, bestB2, bestPhi2);
+          fi;
+        fi;
+      fi;
+
+      if cnt mod Kprint = 0 then
+        printf("PROGRESS %d/%d  bestF1=%.12g  bestF2=%.12g\n", cnt, tot, bestVal1, bestVal2);
+      fi;
+
+    od;
+  od;
+
+  printf("\nTop-%d candidates F1 (val,alpha,beta,phi):\n", Kkeep);
+  for i from 1 to nops(bestList1) do
+    printf("  %d: %.12g   %.10f   %.10f   %.10f\n",
+           i, bestList1[i][1], bestList1[i][2], bestList1[i][3], bestList1[i][4]);
+  od;
+
+  printf("\nTop-%d candidates F2 (val,alpha,beta,phi):\n", Kkeep);
+  for i from 1 to nops(bestList2) do
+    printf("  %d: %.12g   %.10f   %.10f   %.10f\n",
+           i, bestList2[i][1], bestList2[i][2], bestList2[i][3], bestList2[i][4]);
+  od;
+
+  return bestList1, bestList2;
+end proc:
+
+###########################################################
+
+###########################################################
+# MAIN RUN
+#   The call below performs the 2D grid search described above.
+#   Increase Ngrid for a finer grid; increase ScanM for more phi scanning.
+###########################################################
+
+bestF1, bestF2 := GridSearchAB(Ngrid, pBias):
+
+
+
+
+###########################################################
+##############  Now check with optimization package.
+###########################################################
+
+
+Digits:=200:with(Optimization):
+((1-alpha)*(2^alpha-(2*sin(phi/2))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha)
+   - (1-alpha)*((2*sin(phi/2))^(-beta)-2^(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)
+     *(1-alpha-beta)*5^(-alpha-beta)
+  )/(alpha+beta);FF1:=subs(alpha=r*beta,%):# We set beta=r*alpha with r in [0,1]Minimize(FF1, r=10^(-20)....1-10^(-20), beta=10^(-20)....1-10^(-20),phi=0.061...Pi-10^(-20),
+initialpoint = [r=0.5, beta=0.5, phi=0.1]):evalf(%,10);
+
+
+###########################################################
+
+((1-alpha)*(2^alpha-(2*sin(phi/2))^alpha)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha)
+   - (1-alpha)*((2*sin(phi/2))^(-beta)-2^(-beta))/(Pi-phi)^2/sin(Pi*beta)/GAMMA(1-beta)
+     *( sigma*((alpha+beta)-1)*5^(-(alpha+beta))
+        + (alpha+beta)^2*((beta-alpha)*(1+alpha)/(2*(alpha+beta)))*5^(-(alpha+beta)-1)
+      )
+  )/(alpha+beta);subs(alpha=r*beta,%):FF2 := ((-beta*r + 1)*(2^(r*beta) - (2*sin(1/2*phi))^(r*beta))/((Pi - phi)^2*sin(Pi*r*beta)*GAMMA(beta*r + 1)) - (-beta*r + 1)*((2*sin(1/2*phi))^(-beta) - 2^(-beta))*(sigma*(beta*r + beta - 1)*5^(-beta*r - beta) - 1/2*5^(-beta*r - beta - 1)*(beta*r + 1)*(r - 1)*beta^2*(r + 1))/((Pi - phi)^2*sin(Pi*beta)*GAMMA(1 - beta)))/(beta*r + beta);
+
+# We take in turn sigma=1 and sigma=-1 because the sign of alpha+beta-1 can take either sign. # This way we guarantee to not miss the minumum of F2# We set alpha=r*beta with r in [0,1]subs(sigma=1,FF2):Minimize(%, r=10^(-20)....1-10^(-20), beta=10^(-20)....1-10^(-20),phi=0.061...Pi-10^(-20),
+initialpoint = [r=0.9, beta=0.8, phi=0.1]):evalf(%,10);
+
+subs(sigma=-1,FF2):Minimize(%, r=10^(-20)....1-10^(-20), beta=10^(-20)....1-10^(-20),phi=0.061...Pi-10^(-20),
+initialpoint = [r=0.9, beta=0.8, phi=0.1]):evalf(%,10);

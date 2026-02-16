@@ -1,0 +1,663 @@
+restart:
+Digits := 80:
+
+###########################################################
+#  INFIMUM OF P5(alpha,beta,phi) FOR n=5
+#
+#  Goal:
+#    Compute a numerical lower bound for
+#      inf_{alpha,beta in [0,1], phi in [phi0,pi)} P5(alpha,beta,phi).
+#
+#  Dimension reduction in phi:
+#    For each fixed (alpha,beta), we evaluate P5 only at
+#      (i)  phi = phi0,
+#      (ii) phi = Pi (using a stable limiting formula), and
+#      (iii) any interior critical points where d/dphi P5(alpha,beta,phi)=0.
+#    The critical points are found with fsolve, using several safeguards
+#    (root de-duplication, sign-change bracketing, and 'avoid' sets).
+#
+#  Numerical stability on the boundary:
+#    The generic P5 formula has removable singularities on the faces
+#    alpha in {0,1}, beta in {0,1}, and at phi=Pi.  These cases are handled
+#    by explicit edge/corner formulas (and their phi-derivatives) so the
+#    search remains stable near the boundary.
+###########################################################
+
+
+# ---------------- PARAMETERS (search resolution) ----------------
+# n=5 and phi in [phi0, Pi).  We take phiMax=Pi-uMin to avoid calling the
+# generic formulas exactly at phi=Pi; phi=Pi itself is handled separately
+# by P5_Pi() below.
+#
+# m0 and minf are the numerical bounds computed elsewhere in the project;
+# this script uses their absolute values |m0| and |m_infty|.
+#
+# Ngrid, pBias:
+#   Build a biased grid on [0,1] for alpha and beta.  The bias exponent pBias
+#   concentrates points near 0 and 1 (where removable singularities occur).
+#
+# Ncert, maxRoots, gTol:
+#   Controls for locating interior critical points in phi (roots of dP5/dphi).
+#
+# Kkeep, Kprint:
+#   Keep a short list of the best candidates and print progress.
+
+n    := 5:
+phi0 := 0.061:
+uMin := 1e-8:
+phiMax := evalf(Pi - uMin):
+
+m0   := -0.09763823:
+minf := -0.03332479:
+m0Abs   := abs(m0):
+minfAbs := abs(minf):
+
+Ngrid := 31:
+pBias := 3:
+
+Ncert    := 18:
+maxRoots := 20:
+gTol     := 1e-10:
+
+Kkeep := 10:
+Kprint := 200:
+
+edgeTol  := 1e-30:
+phiPiTol := 1e-12:
+
+# ---------------- helpers ----------------
+Dedup := proc(L, tol)
+  local S, out, x;
+  if nops(L)=0 then return []; fi;
+  S := sort(L);
+  out := [S[1]];
+  for x in S[2..-1] do
+    if abs(x - out[-1]) > tol then
+      out := [op(out), x];
+    fi;
+  od;
+  return out;
+end proc:
+
+InsertBest := proc(bestList, item, K)
+  local L;
+  L := [op(bestList), item];
+  L := sort(L, (x,y) -> x[1] < y[1]);
+  if nops(L) > K then L := L[1..K]; fi;
+  return L;
+end proc:
+
+Grid01_Biased := proc(N::posint, p::posint)
+  local k, L0, L1, S;
+  L0 := [seq( (k/(N-1))^p, k=0..N-1 )];
+  L1 := [seq( 1 - (k/(N-1))^p, k=0..N-1 )];
+  S := {op(L0), op(L1)};
+  return sort(convert(S, list));
+end proc:
+
+Snap01 := proc(x, eps)
+  if abs(x) < eps then return 0;
+  elif abs(1-x) < eps then return 1;
+  else return x;
+  fi;
+end proc:
+
+ForceReal := proc(x, tol)
+  local y;
+  y := evalf(x);
+  if type(y, complexcons) then
+    if abs(Im(y)) < tol then return Re(y); else return y; fi;
+  else
+    return y;
+  fi;
+end proc:
+
+SnapAB := proc(a0,b0)
+  local a,b;
+  a := Snap01(a0, edgeTol);
+  b := Snap01(b0, edgeTol);
+  return a,b;
+end proc:
+
+# ---------------------------------------------------------
+# (alpha,beta)=(0,0): corner case with a closed-form expression for P5.
+# For this corner, the minimum over phi in [phi0,Pi] occurs at phi=Pi/2,
+# so we evaluate P5(0,0,phi) at {phi0, Pi/2, Pi} (no root-search needed).
+# ---------------------------------------------------------
+P00 := proc(phi)
+  local u, s, c;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  c := -ln(s);  # = ln(csc(phi/2))
+  return evalf(
+    c/(Pi*u^2) * ( ln(n) + gamma - (1/2)*(c - ln(4)) )
+    - m0Abs/n
+    - minfAbs*GAMMA(3,n)/n^2
+  );
+end proc:
+
+P00Pi := evalf(
+  (ln(n)+gamma - (1/2)*ln(1/4))/(8*Pi)
+  - m0Abs/n
+  - minfAbs*GAMMA(3,n)/n^2
+):
+
+# ---------------------------------------------------------
+# Stable phi=Pi evaluator (works on edges except (0,0))
+# from P5(alpha,beta,Pi) but rewritten to remove
+# sin(pi a), sin(pi b) and Gamma poles:
+#   1/(sin(pi*a)*Gamma(a-1)) = -Gamma(2-a)/Pi
+#   1/(sin(pi*b)*Gamma(-b))  = -Gamma(1+b)/Pi
+#   b*Gamma(-b) = -Gamma(1-b)  (used for m0-term)
+# ---------------------------------------------------------
+P5_Pi := proc(a0,b0)
+  local a,b, polyA, polyB, termM0, termMinf, termA, termB;
+
+  a,b := SnapAB(a0,b0);
+
+  if a=0 and b=0 then return P00Pi; fi;
+  if a+b=0 then return P00Pi; fi;
+
+  # m0 term (avoid 0*Gamma(0) at b=1)
+  if b=1 then
+    termM0 := 0;
+  else
+    termM0 := 5^(a-1)*(b-1)*m0Abs*GAMMA(1-b);
+  fi;
+
+  termMinf := -(1/25)*minfAbs*GAMMA(a+3,5)*5^(-b);
+
+  polyA := b^2 + (-a-1)*b + 10 + a;
+  polyB := a^3 - a^2*b + 9*a + b - 10;
+
+  termA := (1/80)*10^a*polyA*GAMMA(2-a)/(Pi*(a+b));
+  termB := (1/80)*polyB*GAMMA(1+b)*10^(-b)/(Pi*(a+b));
+
+  return evalf(termM0 + termMinf + termA + termB);
+end proc:
+
+###########################################################
+# Corner formulas (n general; here n=5)
+###########################################################
+
+# P_n(0,1,phi) (eq 131 specialized to n=5)
+P5_01 := proc(phi)
+  local u, s, csc, A, K, tail;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  csc := 1/s;
+  K := (1/(2*n))*(1 - 1/(2*n));   # = 9/100 for n=5
+  A := ln(csc) - K*(csc - 1);
+  tail := -m0Abs/n - minfAbs/(n*exp(n))*(1 + 2/n + 2/n^2);
+  return evalf( (1/(Pi*u^2))*A + tail );
+end proc:
+
+# P_n(1,0,phi) (eq 132 specialized to n=5)
+P5_10 := proc(phi)
+  local u, s, tail;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  tail := -m0Abs - n*minfAbs/exp(n)*(1 + 3/n + 6/n^2 + 6/n^3);
+  return evalf( n*(2 + 1/n)*(1 - s)/(Pi*u^2) + tail );
+end proc:
+
+# P_n(1,1,phi) (eq 133 specialized to n=5)
+P5_11 := proc(phi)
+  local u, s, tail;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  tail := -m0Abs - minfAbs/exp(n)*(1 + 3/n + 6/n^2 + 6/n^3);
+  return evalf( n*(1 - s)/(Pi*u^2) + tail );
+end proc:
+
+###########################################################
+# Edge formulas (valid on edges, excluding corners
+# where they become singular; corners handled separately above)
+###########################################################
+
+P5_ab0 := proc(a, phi)  # beta=0, alpha not 0 or 1
+  local u,s;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  return evalf(
+    -m0Abs*5^(a-1)
+    - (1/25)*minfAbs*GAMMA(a+3,5)
+    + (1/10)*(a-1)*(10+a)*10^a*(s^a-1)/u^2/sin(Pi*a)/a/GAMMA(1+a)
+  );
+end proc:
+
+P5_ab1 := proc(a, phi)  # beta=1, alpha not 0 or 1
+  local u,s,num;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+
+  num :=
+    500*Pi*10^a*(a-1)*(1+a)*s^(1+a)
+    +(
+      -4*Pi*sin(Pi*a)*GAMMA(a+2)*minfAbs*u^2*(1+a)*GAMMA(a+3,5)
+      -100*sin(Pi*a)*
+        ( Pi*m0Abs*u^2*(1+a)*5^a + (1/20)*(a-1)*(a^2+9) )*GAMMA(a+2)
+      -500*Pi*10^a*(a-1)*(1+a)
+     )*s
+    +5*GAMMA(a+2)*sin(Pi*a)*(a-1)*(a^2+9);
+
+  return evalf(
+    (1/500)*num /Pi /s /u^2 /(1+a)/sin(Pi*a)/GAMMA(a+2)
+  );
+end proc:
+
+P5_1b := proc(b, phi)   # alpha=1, any beta in [0,1]
+  local u,s,num;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+
+  num :=
+    -25*Pi*m0Abs*u^2*(b+1)*GAMMA(2-b)
+    +(-25*b^2+50*b-275)*s
+    -236*Pi*exp(-5)*minfAbs*u^2*(b+1)*5^(-b)
+    +25*b^2-50*b+275;
+
+  return evalf( (1/25)*num /u^2 /Pi /(b+1) );
+end proc:
+
+P5_0b := proc(b, phi)   # alpha=0, beta not 0 or 1
+  local u,s,L,num;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  L := ln(s);
+
+  num :=
+    -5*Pi*10^(-b)*(b-1)*(b-10)*s^(-b)
+    -10*Pi*sin(Pi*b)*b*m0Abs*u^2*GAMMA(2-b)^2
+    -74*sin(Pi*b)*
+      ( (5/74*b^2-5/74*b+25/37)*L + Pi*b*exp(-5)*5^(-b)*minfAbs*u^2 )*GAMMA(2-b)
+    +5*Pi*10^(-b)*(b-1)*(b-10);
+
+  return evalf( (1/50)*num /b /Pi /u^2 /sin(Pi*b)/GAMMA(2-b) );
+end proc:
+
+P5_gen := proc(a,b,phi) # away from edges
+  local u,s,t, termA, termB, Pfrac, Tail;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  t := 2*s;
+
+  termA :=
+    (1-a)*(2^a - t^a)/u^2/sin(Pi*a)/GAMMA(1+a)*5^a*(1 + (a-b)*(1-b)/10);
+
+  termB :=
+    (1-a)*(t^(-b) - 2^(-b))/u^2/sin(Pi*b)/GAMMA(1-b)*5^(-b)*(1 + (a-b)*(1+a)/10);
+
+  Pfrac := (termA - termB)/(a+b);
+
+  Tail := -m0Abs*GAMMA(2-b)*5^(a-1)
+          -minfAbs*GAMMA(a+3,5)/5^(2+b);
+
+  return evalf(Pfrac + Tail);
+end proc:
+
+###########################################################
+# Master evaluator P5(a,b,phi)
+###########################################################
+P5 := proc(a0,b0,phi0in)
+  local a,b,phi;
+
+  a,b := SnapAB(a0,b0);
+  phi := evalf(phi0in);
+
+  if abs(Pi-phi) < phiPiTol then
+    return P5_Pi(a,b);
+  fi;
+
+  # corners first
+  if a=0 and b=0 then return P00(phi); fi;
+  if a=0 and b=1 then return P5_01(phi); fi;
+  if a=1 and b=0 then return P5_10(phi); fi;
+  if a=1 and b=1 then return P5_11(phi); fi;
+
+  # edges
+  if b=0 then return P5_ab0(a,phi); fi;
+  if b=1 then return P5_ab1(a,phi); fi;
+  if a=1 then return P5_1b(b,phi); fi;
+  if a=0 then return P5_0b(b,phi); fi;
+
+  # interior
+  return P5_gen(a,b,phi);
+end proc:
+
+###########################################################
+# Exact phi-derivatives 
+###########################################################
+
+# corner (0,1) derivative from eq (131) specialized to n=5
+dP5_01 := proc(phi)
+  local u, s, csc, cot, K, A, Aprime;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  csc := 1/s;
+  cot := evalf(cos(phi/2))/s;
+
+  K := (1/(2*n))*(1 - 1/(2*n));  # 9/100
+
+  A := ln(csc) - K*(csc - 1);
+
+  # A' = -(1/2)*cot + (K/2)*csc*cot = -(1/2)*cot*(1 - K*csc)
+  Aprime := -(1/2)*cot*(1 - K*csc);
+
+  # d/dphi (A/u^2) = Aprime/u^2 + 2A/u^3
+  return evalf( (1/Pi)*(Aprime/u^2 + 2*A/u^3) );
+end proc:
+
+# Closed-form phi-derivatives on boundary faces (kept explicit for speed/stability):
+dP5_a0 := proc(a,phi)  # d/dphi P5(alpha,0,phi)
+  local u,s,co;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  co := evalf(cos(phi/2));
+  return evalf(
+    (1/20)*(10+a)*(4*s^(1+a)+a*co*u*s^a-4*s)*(a-1)*10^a
+    /s/u^3/sin(Pi*a)/a/GAMMA(1+a)
+  );
+end proc:
+
+dP5_a1 := proc(a,phi)  # d/dphi P5(alpha,1,phi)
+  local u,s,co;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  co := evalf(cos(phi/2));
+  return evalf(
+    2*( 1/4*Pi*a*10^a*co*(1+a)*u*s^(1+a)
+        +(1/100*sin(Pi*a)*(a^2+9)*GAMMA(a+2)+Pi*10^a*(1+a))*co^2
+        -1/400*GAMMA(a+2)*sin(Pi*a)*(a^2+9)*u*co
+        +1/100*sin(Pi*a)*(a^2+9)*GAMMA(a+2)*s
+        -1/100*sin(Pi*a)*(a^2+9)*GAMMA(a+2)
+        +(1+a)*(s^(a+2)-1)*10^a*Pi
+      )*(a-1)/(1+a)/u^3/s^2/Pi/sin(Pi*a)/GAMMA(a+2)
+  );
+end proc:
+
+dP5_1b := proc(b,phi)  # d/dphi P5(1,beta,phi)
+  local u,s,co;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  co := evalf(cos(phi/2));
+  return evalf(
+    -1/2*((u)*co+4*s-4)*(b^2-2*b+11)/(b+1)/u^3/Pi
+  );
+end proc:
+
+dP5_0b := proc(b,phi)  # d/dphi P5(0,beta,phi)
+  local u,s,co,L;
+  u := evalf(Pi - phi);
+  s := abs(evalf(sin(phi/2)));
+  co := evalf(cos(phi/2));
+  L := ln(s);
+  return evalf(
+    (1/20)*
+    (-Pi*b*co*(10^(-b)*b-10^(1-b))*u*s^(-b)
+     -(4*s*L+u*co)*(b^2-b+10)*sin(Pi*b)*GAMMA(1-b)
+     +4*(s^(1-b)-s)*(b-10)*10^(-b)*Pi
+    )
+    /s/b/Pi/u^3/sin(Pi*b)/GAMMA(1-b)
+  );
+end proc:
+
+# Closed-form phi-derivative for interior points (alpha,beta in (0,1)):
+dP5_gen := proc(a,b,phi)
+  local u,s,co, T1, T2;
+  u  := evalf(Pi - phi);
+  s  := abs(evalf(sin(phi/2)));
+  co := evalf(cos(phi/2));
+
+  T1 :=
+    (1/20)*(a-1)*10^(-b)*((1+a)*b-a^2-a-10)*
+    (-4*s^(1-b)+b*co*u*s^(-b)+4*s) /
+    s/u^3/sin(Pi*b)/(a+b)/GAMMA(1-b);
+
+  T2 :=
+    (1/20)*(a-1)*(4*s^(1+a)+a*co*u*s^a-4*s)*10^a*((1-b)*a+b^2-b+10) /
+    s/u^3/sin(Pi*a)/(a+b)/GAMMA(1+a);
+
+  return evalf(T1 + T2);
+end proc:
+
+# dispatcher for derivative
+dP5_dphi := proc(a0,b0,phi)
+  local a,b;
+
+  a,b := SnapAB(a0,b0);
+
+  # (0,0): we do not root-search; return something harmless
+  if a=0 and b=0 then return 0; fi;
+
+  # corners
+  if a=0 and b=1 then return dP5_01(phi); fi;
+  if a=1 then return dP5_1b(b,phi); fi;  # includes (1,0) and (1,1)
+
+  # edges
+  if b=0 then return dP5_a0(a,phi); fi;
+  if b=1 then return dP5_a1(a,phi); fi;
+  if a=0 then return dP5_0b(b,phi); fi;
+
+  # interior
+  return dP5_gen(a,b,phi);
+end proc:
+
+###########################################################
+# All interior critical phi in (phi0,phiMax)
+#
+# For fixed (alpha,beta), we find all roots of dP5/dphi in (phi0,phiMax).
+# We use two complementary strategies:
+#   (1) repeated calls to fsolve with an 'avoid' set, to extract distinct roots;
+#   (2) a coarse certification sweep with Ncert subintervals to catch missed roots
+#       via sign changes or near-zero derivative values.
+# The resulting list is de-duplicated and returned as candidate critical points.
+###########################################################
+CritPhi_All := proc(a0,b0, Ncert::nonnegint, maxRoots::posint, tol::numeric, gTol::numeric)
+  local roots, avoidset, sol, k, phiA,phiB,fA,fB, r, F;
+
+  # skip search at (0,0)
+  if Snap01(a0,edgeTol)=0 and Snap01(b0,edgeTol)=0 then
+    return [];
+  fi;
+
+  roots := []:
+  avoidset := {phi0, phiMax}:
+
+  F := ph -> evalf(dP5_dphi(a0,b0,ph));
+
+  for k to maxRoots do
+    sol := fsolve(F, phi0..phiMax, avoid=avoidset);
+    if not type(sol,numeric) then break; fi;
+
+    sol := evalf(sol);
+    if sol <= phi0+tol or sol >= phiMax-tol then break; fi;
+
+    roots := [op(roots), sol];
+    avoidset := avoidset union {sol};
+  od;
+
+  if Ncert > 0 then
+    phiA := phi0: fA := evalf(F(phiA));
+
+    for k from 1 to Ncert do
+      phiB := evalf(phi0 + (phiMax-phi0)*k/Ncert):
+      fB := evalf(F(phiB)):
+
+      if type(fB,numeric) and abs(fB) < gTol then
+        r := fsolve(F, phiB);
+        if type(r,numeric) then
+          r := evalf(r);
+          if r > phi0 and r < phiMax then roots := [op(roots), r]; fi;
+        fi;
+      fi;
+
+      if type(fA,numeric) and type(fB,numeric) and fA*fB <= 0 then
+        r := fsolve(F, phiA..phiB);
+        if type(r,numeric) then
+          r := evalf(r);
+          if r > phi0 and r < phiMax then roots := [op(roots), r]; fi;
+        fi;
+      fi;
+
+      phiA := phiB: fA := fB:
+    od;
+  fi;
+
+  return Dedup(roots, tol);
+end proc:
+
+###########################################################
+# Min over phi candidates for fixed (a,b)
+#
+# Candidate set for phi:
+#   {phi0} union {all interior critical points} union {Pi}.
+# For phi=Pi we call the stable evaluator P5_Pi().
+###########################################################
+MinOverPhi := proc(a0,b0)
+  local a,b, rootsPhi, ph, val, best, bestphi;
+
+  a,b := SnapAB(a0,b0);
+
+  best := +infinity: bestphi := NULL:
+
+  # (0,0): minimum at Pi/2, so no derivative search
+  if a=0 and b=0 then
+    val := ForceReal(P5(0,0,phi0), 1e-35);
+    if type(val,realcons) and val < best then best:=val: bestphi:=phi0: fi;
+
+    val := ForceReal(P5(0,0,evalf(Pi/2)), 1e-35);
+    if type(val,realcons) and val < best then best:=val: bestphi:=evalf(Pi/2): fi;
+
+    val := ForceReal(P5_Pi(0,0), 1e-35);
+    if type(val,realcons) and val < best then best:=val: bestphi:=Pi: fi;
+
+    return [best, bestphi, []];
+  fi;
+
+  rootsPhi := CritPhi_All(a,b, Ncert, maxRoots, 1e-8, gTol);
+
+  # endpoint phi = phi0
+  val := ForceReal(P5(a,b,phi0), 1e-35);
+  if type(val,realcons) and val < best then
+    best := val: bestphi := phi0:
+  fi;
+
+  # interior critical points
+  for ph in rootsPhi do
+    val := ForceReal(P5(a,b,ph), 1e-35);
+    if type(val,realcons) and val < best then
+      best := val: bestphi := ph:
+    fi;
+  od;
+
+  # endpoint phi = Pi
+  val := ForceReal(P5_Pi(a,b), 1e-35);
+  if type(val,realcons) and val < best then
+    best := val: bestphi := Pi:
+  fi;
+
+  return [best, bestphi, rootsPhi];
+end proc:
+
+###########################################################
+# 2D grid search over (alpha,beta)
+#
+# The (alpha,beta) grid is constructed by Grid01_Biased(Ngrid,pBias), which
+# clusters points near 0 and 1.  For each grid point we call MinOverPhi(),
+# so the overall search is 2D (alpha,beta), with phi handled analytically
+# via critical-point candidates.
+###########################################################
+GridSearchAB := proc(N::posint, p::posint)
+  local Agrid,Bgrid, aG,bG,
+        a,b, res, val, phiStar,
+        bestList, bestVal, bestA, bestB, bestPhi,
+        cnt, tot, t0, elapsed, i;
+
+  Agrid := Grid01_Biased(N,p):
+  Bgrid := Grid01_Biased(N,p):
+
+  aG := ListTools:-Reverse(Agrid):
+  bG := ListTools:-Reverse(Bgrid):
+
+  bestList := []:
+  bestVal := +infinity: bestA := NULL: bestB := NULL: bestPhi := NULL:
+
+  tot := nops(aG)*nops(bG):
+  cnt := 0:
+  t0 := time[real]():
+
+  printf("START tot=%d  N=%d  p=%d  phi in [%.10f,Pi]\n", tot, N, p, phi0);
+
+  for a in aG do
+    for b in bG do
+      cnt := cnt + 1;
+
+      a := Snap01(a, edgeTol):
+      b := Snap01(b, edgeTol):
+
+      res := MinOverPhi(a,b);
+      val := res[1];
+      phiStar := res[2];
+
+      if type(val,realcons) then
+        bestList := InsertBest(bestList, [val,a,b,phiStar], Kkeep);
+
+        if val < bestVal then
+          bestVal := val: bestA := a: bestB := b: bestPhi := phiStar:
+          printf("NEW BEST  val=%.12f  a=%.12f  b=%.12f  phi=%.12f\n",
+                 bestVal, evalf(bestA), evalf(bestB), evalf(bestPhi));
+        fi;
+      fi;
+
+      if cnt mod Kprint = 0 then
+        elapsed := time[real]()-t0;
+        printf("PROGRESS %d/%d  best=%.12f  (a,b,phi)=(%.12f,%.12f,%.12f)\n",
+               cnt, tot, bestVal, evalf(bestA), evalf(bestB), evalf(bestPhi));
+      fi;
+
+    od;
+  od;
+
+  printf("\nTop-%d candidates (val,alpha,beta,phi):\n", Kkeep);
+  for i from 1 to nops(bestList) do
+    printf("  %d: %.12f   %.12f   %.12f   %.12f\n",
+           i, bestList[i][1], evalf(bestList[i][2]), evalf(bestList[i][3]), evalf(bestList[i][4]));
+  od;
+
+  return bestList;
+end proc:
+
+bestCandidates := GridSearchAB(Ngrid, pBias):
+bestCandidates;
+
+
+
+
+###########################################################
+# OPTIONAL: independent check using Optimization[Minimize]
+#
+# This is a fully continuous check (alpha,beta,phi variables).
+###########################################################
+
+# ###########################################################
+# ###### Independent check using Optimization package
+# ###########################################################
+
+ (1-alpha)*(2^alpha-(2*sin(1/2*phi))^alpha)*n^alpha*(1+1/2*(alpha-beta)*(1-beta)
+ /n)/(Pi-phi)^2/sin(Pi*alpha)/GAMMA(1+alpha)/(alpha+beta)-(1-alpha)*((2*sin(1/2*
+ phi))^(-beta)-2^(-beta))*n^(-beta)*(1+1/2*(alpha-beta)*(1+alpha)/n)/(Pi-phi)^2/
+ Pi*GAMMA(beta)/(alpha+beta)+m[0]*GAMMA(2-beta)*n^(-1+alpha)+m[infinity]*GAMMA(
+ alpha+3,n)*n^(-2-beta):
+
+ P5:=subs(n=5,m[0]=-0.0976382271,m[infinity]=-0.03332478558,%);
+
+ Digits:=200:
+ with(Optimization):
+
+ Minimize(P5, alpha=10^(-20)....1-10^(-20), 
+ beta=10^(-20)....1-10^(-20),
+ phi=0.061...Pi-10^(-20),
+ initialpoint = [alpha=0.5, beta=0.5, phi=0.1]):
+ evalf(%,10);
+
