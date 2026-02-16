@@ -63,7 +63,7 @@ Digits := 60:
 ############################################################
 # USER INPUTS
 ############################################################
-N := 5:                  # grid points for alpha, beta, phi  (same N)
+N := 21:                  # grid points for alpha, beta, phi  (same N)
 phi0 := 0.061:
 phi_eps := 1e-6:          # avoid phi=Pi exactly
 sLo := 1e-8:              # s search lower bound (ignore s=0)
